@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import { TrendingUp, TrendingDown, Plus, RefreshCw } from 'lucide-react';
 import { getPortfolioSummary, getTransactions, createAsset, createTransaction } from './services/api';
 import { PortfolioSummary, Transaction } from './types';
@@ -50,9 +50,9 @@ function App() {
       ]);
       setSummary(summaryData);
       setTransactions(txData);
-    } catch (err) {
+    } catch {
       setError('Failed to load data. Is the backend running?');
-      console.error(err);
+      console.error('Failed to load portfolio data');
     } finally {
       setLoading(false);
     }
@@ -64,7 +64,7 @@ function App() {
 
   const pieData = summary
     ? Object.entries(summary.allocationPercent)
-        .filter(([_, v]) => v > 0)
+        .filter(([, v]) => v > 0)
         .map(([type, value]) => ({
           name: TYPE_LABELS[type] || type,
           value: parseFloat(value.toFixed(2)),
@@ -245,7 +245,7 @@ function AddAssetModal({ onClose, onSuccess }: { onClose: () => void; onSuccess:
       await createAsset(form);
       onSuccess();
       onClose();
-    } catch (err) {
+    } catch {
       alert('Failed to add asset');
     } finally {
       setLoading(false);
@@ -326,14 +326,14 @@ function AddTransactionModal({ onClose, onSuccess }: { onClose: () => void; onSu
     try {
       await createTransaction({
         asset_id: Number(form.asset_id),
-        type: form.type as any,
+        type: form.type as 'buy' | 'sell',
         quantity: Number(form.quantity),
         price: Number(form.price),
         date: form.date,
       });
       onSuccess();
       onClose();
-    } catch (err) {
+    } catch {
       alert('Failed to add transaction');
     } finally {
       setLoading(false);

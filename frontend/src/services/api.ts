@@ -25,7 +25,11 @@ export const getTransactions = (params?: { asset_id?: number; limit?: number }) 
   api.get<Transaction[]>('/transactions', { params }).then(r => r.data);
 export const createTransaction = (data: Partial<Transaction>) => 
   api.post<Transaction>('/transactions', data).then(r => r.data);
-export const deleteTransaction = (id: number) => api.delete(`/transactions/${id}`);
+export const deleteTransaction = (id: number) => 
+  api.delete(`/transactions/${id}`).catch((err: unknown) => {
+    console.error('Failed to delete transaction:', err);
+    throw err;
+  });
 
 // Accounts
 export const getAccounts = () => api.get<Account[]>('/accounts').then(r => r.data);
