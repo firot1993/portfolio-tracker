@@ -8,11 +8,13 @@ const dbPath = path.join(__dirname, '../../data/portfolio.db');
 
 let db: SqlJsDatabase;
 
-export async function initDB(): Promise<SqlJsDatabase> {
+export async function initDB(inMemory = false): Promise<SqlJsDatabase> {
   const SQL = await initSqlJs();
   
-  // Load existing db or create new
-  if (fs.existsSync(dbPath)) {
+  // For tests, use in-memory database
+  if (inMemory) {
+    db = new SQL.Database();
+  } else if (fs.existsSync(dbPath)) {
     const buffer = fs.readFileSync(dbPath);
     db = new SQL.Database(buffer);
   } else {
@@ -81,6 +83,9 @@ export function getDB(): SqlJsDatabase {
 
 export function saveDB() {
   if (!db) return;
+  // Skip save for in-memory test databases
+  if (process.env.VITEST) return;
+  
   const data = db.export();
   const buffer = Buffer.from(data);
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });

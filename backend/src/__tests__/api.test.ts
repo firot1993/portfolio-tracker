@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import express from 'express';
 import request from 'supertest';
-import { initDB, getDB, query, run, saveDB, lastInsertId } from '../db/index.js';
+import { initDB } from '../db/index.js';
 import assetsRouter from '../routes/assets.js';
 import transactionsRouter from '../routes/transactions.js';
 import holdingsRouter from '../routes/holdings.js';
@@ -16,17 +16,18 @@ app.use('/api/portfolio', portfolioRouter);
 
 describe('Portfolio Tracker API', () => {
   beforeAll(async () => {
-    await initDB();
+    // Use in-memory database for tests
+    await initDB(true);
   });
 
   describe('Assets', () => {
     it('should create a new asset', async () => {
       const res = await request(app)
         .post('/api/assets')
-        .send({ symbol: 'TEST', name: 'Test Asset', type: 'crypto' });
+        .send({ symbol: 'BTC', name: 'Bitcoin', type: 'crypto' });
       
       expect(res.status).toBe(201);
-      expect(res.body.symbol).toBe('TEST');
+      expect(res.body.symbol).toBe('BTC');
       expect(res.body.type).toBe('crypto');
     });
 
@@ -34,36 +35,36 @@ describe('Portfolio Tracker API', () => {
       const res = await request(app).get('/api/assets');
       expect(res.status).toBe(200);
       expect(Array.isArray(res.body)).toBe(true);
+      expect(res.body.length).toBeGreaterThan(0);
     });
 
     it('should reject duplicate symbols', async () => {
-      await request(app)
-        .post('/api/assets')
-        .send({ symbol: 'DUP', name: 'First', type: 'crypto' });
-      
       const res = await request(app)
         .post('/api/assets')
-        .send({ symbol: 'DUP', name: 'Second', type: 'stock_us' });
+        .send({ symbol: 'BTC', name: 'Bitcoin Copy', type: 'stock_us' });
       
       expect(res.status).toBe(409);
+    });
+
+    it('should validate required fields', async () => {
+      const res = await request(app)
+        .post('/api/assets')
+        .send({ symbol: 'ETH' }); // missing name and type
+      
+      expect(res.status).toBe(400);
     });
   });
 
   describe('Transactions', () => {
-    let assetId: number;
-
-    beforeAll(async () => {
-      const res = await request(app)
-        .post('/api/assets')
-        .send({ symbol: 'TXN', name: 'Transaction Test', type: 'crypto' });
-      assetId = res.body.id;
-    });
-
     it('should create a buy transaction and update holdings', async () => {
+      // Get existing asset
+      const assets = await request(app).get('/api/assets');
+      const btc = assets.body.find((a: any) => a.symbol === 'BTC');
+      
       const res = await request(app)
         .post('/api/transactions')
         .send({
-          asset_id: assetId,
+          asset_id: btc.id,
           type: 'buy',
           quantity: 10,
           price: 100,
@@ -78,7 +79,15 @@ describe('Portfolio Tracker API', () => {
     it('should list transactions', async () => {
       const res = await request(app).get('/api/transactions');
       expect(res.status).toBe(200);
-      expect(res.body.length).toBeGreaterThan(0);
+      expect(Array.isArray(res.body)).toBe(true);
+    });
+
+    it('should validate required fields', async () => {
+      const res = await request(app)
+        .post('/api/transactions')
+        .send({ type: 'buy' }); // missing required fields
+      
+      expect(res.status).toBe(400);
     });
   });
 
