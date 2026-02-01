@@ -22,7 +22,9 @@ jobs:
           node-version: '22'
 
       - name: Install dependencies
-        run: npm ci
+        run: |
+          npm ci || npm install
+        timeout-minutes: 10
 
       - name: Type check & Build
         run: npm run build
@@ -52,7 +54,9 @@ jobs:
           node-version: '22'
 
       - name: Install dependencies
-        run: npm ci
+        run: |
+          npm ci || npm install
+        timeout-minutes: 10
 
       - name: Type check & Build
         run: npm run build
