@@ -24,13 +24,8 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit
 
-      - name: Debug - Check tsc
-        run: |
-          ls -la node_modules/.bin/tsc || echo "tsc not found"
-          npx tsc --version || echo "tsc failed"
-
-      - name: Type check
-        run: npx tsc --noEmit
+      - name: Type check & Build
+        run: npm run build
 
       - name: Run tests with coverage
         run: npm run test:coverage
@@ -59,22 +54,11 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit
 
-      - name: Debug - Check tsc
-        run: |
-          ls -la node_modules/.bin/tsc || echo "tsc not found"
-          npx tsc --version || echo "tsc failed"
-
-      - name: Type check
-        run: npx tsc --noEmit
-
-      - name: Lint
-        run: npm run lint
+      - name: Type check & Build
+        run: npm run build
       
       - name: Run tests with coverage
         run: npm run test:coverage
-      
-      - name: Build
-        run: npm run build
       
       - name: Upload coverage
         uses: codecov/codecov-action@v4
