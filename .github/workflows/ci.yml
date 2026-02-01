@@ -27,7 +27,7 @@ jobs:
         run: npm ci --no-audit || npm install --no-audit
 
       - name: Type check
-        run: npx --no-install typescript --noEmit
+        run: npx tsc --noEmit
 
       - name: Run tests with coverage
         run: npm run test:coverage
@@ -59,7 +59,7 @@ jobs:
         run: npm ci --no-audit || npm install --no-audit
 
       - name: Type check
-        run: npx --no-install typescript --noEmit
+        run: npx tsc --noEmit
 
       - name: Lint
         run: npm run lint
