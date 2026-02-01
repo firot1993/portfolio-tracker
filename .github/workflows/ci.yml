@@ -24,6 +24,11 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit
 
+      - name: Debug - Check tsc
+        run: |
+          ls -la node_modules/.bin/tsc || echo "tsc not found"
+          npx tsc --version || echo "tsc failed"
+
       - name: Type check
         run: npx tsc --noEmit
 
@@ -45,7 +50,7 @@ jobs:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -53,6 +58,11 @@ jobs:
 
       - name: Install dependencies
         run: npm install --no-audit
+
+      - name: Debug - Check tsc
+        run: |
+          ls -la node_modules/.bin/tsc || echo "tsc not found"
+          npx tsc --version || echo "tsc failed"
 
       - name: Type check
         run: npx tsc --noEmit
