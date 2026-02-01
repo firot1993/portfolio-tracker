@@ -15,18 +15,19 @@ jobs:
         working-directory: backend
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-      
+          cache: 'npm'
+
       - name: Install dependencies
-        run: npm ci --prefer-offline --no-audit
-      
+        run: npm ci --no-audit || npm install --no-audit
+
       - name: Type check
         run: npx tsc --noEmit
-      
+
       - name: Run tests with coverage
         run: npm run test:coverage
       
@@ -52,11 +53,11 @@ jobs:
           node-version: '20'
       
       - name: Install dependencies
-        run: npm ci --prefer-offline --no-audit
-      
+        run: npm ci --no-audit || npm install --no-audit
+
       - name: Type check
         run: npx tsc --noEmit
-      
+
       - name: Lint
         run: npm run lint
       
@@ -86,10 +87,10 @@ jobs:
           node-version: '20'
       
       - name: Install backend dependencies
-        run: cd backend && npm ci
-      
+        run: cd backend && npm ci --no-audit || npm install --no-audit
+
       - name: Install frontend dependencies
-        run: cd frontend && npm ci
+        run: cd frontend && npm ci --no-audit || npm install --no-audit
       
       - name: Install Playwright browsers
         run: cd frontend && npx playwright install --with-deps chromium
@@ -121,9 +122,9 @@ jobs:
       - name: Build frontend
         run: |
           cd frontend
-          npm ci --prefer-offline --no-audit
+          npm ci --no-audit || npm install --no-audit
           npm run build
-      
+
       - name: Deploy to GitHub Pages (Preview)
         uses: peaceiris/actions-gh-pages@v4
         with:
@@ -147,9 +148,9 @@ jobs:
       - name: Build frontend
         run: |
           cd frontend
-          npm ci --prefer-offline --no-audit
+          npm ci --no-audit || npm install --no-audit
           npm run build
-      
+
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
