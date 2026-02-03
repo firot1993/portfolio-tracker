@@ -76,6 +76,10 @@ router.delete('/:id', (req, res) => {
 router.delete('/by-symbol/:symbol', (req, res) => {
   const { symbol } = req.params;
   
+  if (!symbol || symbol.trim() === '') {
+    return res.status(400).json({ error: 'Symbol is required' });
+  }
+  
   // Get asset ID first
   const asset = query('SELECT id FROM assets WHERE symbol = ?', [symbol.toUpperCase()])[0] as any;
   
@@ -94,6 +98,7 @@ router.delete('/by-symbol/:symbol', (req, res) => {
 });
 
 // Delete all assets (for testing cleanup)
+// WARNING: This endpoint has no authentication and should be removed or secured in production
 router.delete('/cleanup/all', (req, res) => {
   run('DELETE FROM transactions');
   run('DELETE FROM holdings');
@@ -103,6 +108,7 @@ router.delete('/cleanup/all', (req, res) => {
 });
 
 // Delete test assets only (those starting with "TEST")
+// WARNING: This endpoint has no authentication and should be removed or secured in production
 router.delete('/cleanup/test-data', (req, res) => {
   const testAssets = query("SELECT id FROM assets WHERE symbol LIKE 'TEST%'");
   
@@ -118,8 +124,13 @@ router.delete('/cleanup/test-data', (req, res) => {
 
 // Search assets by symbol or name
 router.get('/search/:query', (req, res) => {
-  const { query } = req.params;
-  const searchTerm = `%${query}%`;
+  const { query: searchQuery } = req.params;
+  
+  if (!searchQuery || searchQuery.trim() === '') {
+    return res.status(400).json({ error: 'Search query is required' });
+  }
+  
+  const searchTerm = `%${searchQuery}%`;
   const assets = query(
     'SELECT * FROM assets WHERE symbol LIKE ? OR name LIKE ? ORDER BY type, symbol',
     [searchTerm, searchTerm]
