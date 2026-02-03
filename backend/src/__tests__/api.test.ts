@@ -89,6 +89,80 @@ describe('Portfolio Tracker API', () => {
       
       expect(res.status).toBe(400);
     });
+
+    it('should reject negative quantity', async () => {
+      const assets = await request(app).get('/api/assets');
+      const btc = assets.body.find((a: any) => a.symbol === 'BTC');
+      
+      const res = await request(app)
+        .post('/api/transactions')
+        .send({
+          asset_id: btc.id,
+          type: 'buy',
+          quantity: -5,
+          price: 100,
+          date: '2024-01-01',
+        });
+      
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('Quantity must be greater than 0');
+    });
+
+    it('should reject negative price', async () => {
+      const assets = await request(app).get('/api/assets');
+      const btc = assets.body.find((a: any) => a.symbol === 'BTC');
+      
+      const res = await request(app)
+        .post('/api/transactions')
+        .send({
+          asset_id: btc.id,
+          type: 'buy',
+          quantity: 5,
+          price: -100,
+          date: '2024-01-01',
+        });
+      
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('Price cannot be negative');
+    });
+
+    it('should reject invalid transaction type', async () => {
+      const assets = await request(app).get('/api/assets');
+      const btc = assets.body.find((a: any) => a.symbol === 'BTC');
+      
+      const res = await request(app)
+        .post('/api/transactions')
+        .send({
+          asset_id: btc.id,
+          type: 'invalid_type',
+          quantity: 5,
+          price: 100,
+          date: '2024-01-01',
+        });
+      
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('Invalid transaction type');
+    });
+
+    it('should delete transaction and reverse holdings update', async () => {
+      // Get existing transactions
+      const txList = await request(app).get('/api/transactions');
+      const tx = txList.body[0];
+      
+      // Delete the transaction
+      const res = await request(app).delete(`/api/transactions/${tx.id}`);
+      expect(res.status).toBe(204);
+      
+      // Verify transaction is deleted
+      const afterDelete = await request(app).get('/api/transactions');
+      expect(afterDelete.body.length).toBe(txList.body.length - 1);
+    });
+
+    it('should return 404 when deleting non-existent transaction', async () => {
+      const res = await request(app).delete('/api/transactions/999999');
+      expect(res.status).toBe(404);
+      expect(res.body.error).toContain('Transaction not found');
+    });
   });
 
   describe('Holdings', () => {
@@ -96,6 +170,83 @@ describe('Portfolio Tracker API', () => {
       const res = await request(app).get('/api/holdings');
       expect(res.status).toBe(200);
       expect(Array.isArray(res.body)).toBe(true);
+    });
+
+    it('should create a new holding directly', async () => {
+      // Create a new asset for this test
+      const assetRes = await request(app)
+        .post('/api/assets')
+        .send({ symbol: 'ETH', name: 'Ethereum', type: 'crypto' });
+      
+      const res = await request(app)
+        .post('/api/holdings')
+        .send({
+          asset_id: assetRes.body.id,
+          quantity: 5,
+          avg_cost: 2000,
+        });
+      
+      expect(res.status).toBe(201);
+      expect(res.body.quantity).toBe(5);
+      expect(res.body.avg_cost).toBe(2000);
+    });
+
+    it('should update existing holding when adding to same asset', async () => {
+      const assets = await request(app).get('/api/assets');
+      const eth = assets.body.find((a: any) => a.symbol === 'ETH');
+      
+      // Add more to existing holding
+      const res = await request(app)
+        .post('/api/holdings')
+        .send({
+          asset_id: eth.id,
+          quantity: 3,
+          avg_cost: 2100,
+        });
+      
+      expect(res.status).toBe(200);
+      expect(res.body.quantity).toBeGreaterThan(5); // Should be 8 now
+    });
+
+    it('should reject negative quantity', async () => {
+      const assets = await request(app).get('/api/assets');
+      const eth = assets.body.find((a: any) => a.symbol === 'ETH');
+      
+      const res = await request(app)
+        .post('/api/holdings')
+        .send({
+          asset_id: eth.id,
+          quantity: -5,
+          avg_cost: 2000,
+        });
+      
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('Quantity must be greater than 0');
+    });
+
+    it('should reject negative average cost', async () => {
+      const assets = await request(app).get('/api/assets');
+      const eth = assets.body.find((a: any) => a.symbol === 'ETH');
+      
+      const res = await request(app)
+        .post('/api/holdings')
+        .send({
+          asset_id: eth.id,
+          quantity: 5,
+          avg_cost: -2000,
+        });
+      
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('Average cost cannot be negative');
+    });
+
+    it('should validate required fields', async () => {
+      const res = await request(app)
+        .post('/api/holdings')
+        .send({ quantity: 5 }); // missing asset_id and avg_cost
+      
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('Missing required fields');
     });
   });
 
