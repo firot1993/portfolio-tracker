@@ -88,6 +88,14 @@ router.post('/', (req, res) => {
     return res.status(400).json({ error: 'Missing required fields: asset_id, quantity, avg_cost' });
   }
   
+  if (quantity <= 0) {
+    return res.status(400).json({ error: 'Quantity must be greater than 0' });
+  }
+  
+  if (avg_cost < 0) {
+    return res.status(400).json({ error: 'Average cost cannot be negative' });
+  }
+  
   try {
     // Check if holding already exists
     const existing = query(

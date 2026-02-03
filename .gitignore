@@ -2,3 +2,20 @@ node_modules/
 *.db
 /package-lock.json
 /package.json
+
+# Coverage reports
+coverage/
+.nyc_output/
+*.lcov
+
+# Build outputs
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
