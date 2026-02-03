@@ -269,3 +269,40 @@ td small {
   background: transparent;
   border: 1px solid var(--border);
 }
+
+.search-box {
+  margin-bottom: 16px;
+}
+
+.search-box input {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.search-box input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.asset-list {
+  max-height: 300px;
+  overflow-y: auto;
+  margin-bottom: 16px;
+}
+
+.asset-list table {
+  font-size: 13px;
+}
+
+.asset-list th, .asset-list td {
+  padding: 8px;
+}
+
+.asset-list .type-badge {
+  font-size: 12px;
+}

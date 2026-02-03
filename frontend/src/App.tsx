@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import { TrendingUp, TrendingDown, Plus, RefreshCw, Trash2 } from 'lucide-react';
-import { getPortfolioSummary, getTransactions, createAsset, createTransaction, deleteTransaction, createHolding, getAssets } from './services/api';
+import { getPortfolioSummary, getTransactions, createAsset, createTransaction, deleteTransaction, createHolding, getAssets, deleteAsset, cleanupAllAssets } from './services/api';
 import './App.css';
 
 const COLORS: Record<string, string> = {
@@ -38,6 +38,7 @@ function App() {
   const [showAddAsset, setShowAddAsset] = useState(false);
   const [showAddTx, setShowAddTx] = useState(false);
   const [showAddHolding, setShowAddHolding] = useState(false);
+  const [showSymbolManagement, setShowSymbolManagement] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const loadData = async () => {
@@ -63,7 +64,7 @@ function App() {
   }, []);
 
   const pieData = summary
-    ? Object.entries(summary.allocationPercent || {})
+    ? (Object.entries(summary.allocationPercent || {}) as [string, number][])
         .filter(([, v]) => v > 0)
         .map(([type, value]) => ({
           name: TYPE_LABELS[type] || type,
@@ -103,6 +104,9 @@ function App() {
           </button>
           <button onClick={() => setShowAddHolding(true)}>
             <Plus size={16} /> Add Holding
+          </button>
+          <button onClick={() => setShowSymbolManagement(true)}>
+            <Trash2 size={16} /> Symbols
           </button>
           <button onClick={loadData} className="icon-btn">
             <RefreshCw size={16} />
@@ -254,6 +258,9 @@ function App() {
       )}
       {showAddHolding && (
         <AddHoldingModal onClose={() => setShowAddHolding(false)} onSuccess={loadData} />
+      )}
+      {showSymbolManagement && (
+        <SymbolManagementModal onClose={() => setShowSymbolManagement(false)} onSuccess={loadData} />
       )}
     </div>
   );
@@ -505,6 +512,150 @@ function AddHoldingModal({ onClose, onSuccess }: { onClose: () => void; onSucces
             </button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+}
+
+function SymbolManagementModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
+  const [searchQuery, setSearchQuery] = useState('');
+  const [assets, setAssets] = useState<any[]>([]);
+  const [filteredAssets, setFilteredAssets] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [confirmCleanup, setConfirmCleanup] = useState(false);
+
+  useEffect(() => {
+    loadAssets();
+  }, []);
+
+  useEffect(() => {
+    if (searchQuery.trim() === '') {
+      setFilteredAssets(assets);
+    } else {
+      const query = searchQuery.toLowerCase();
+      setFilteredAssets(
+        assets.filter(
+          (a) =>
+            a.symbol.toLowerCase().includes(query) || a.name.toLowerCase().includes(query)
+        )
+      );
+    }
+  }, [searchQuery, assets]);
+
+  const loadAssets = async () => {
+    setLoading(true);
+    try {
+      const data = await getAssets();
+      setAssets(data);
+      setFilteredAssets(data);
+    } catch (error) {
+      console.error('Failed to load assets:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteAsset = async (id: number, symbol: string) => {
+    if (!window.confirm(`Are you sure you want to delete "${symbol}"? This will also delete all related transactions and holdings.`)) {
+      return;
+    }
+    try {
+      await deleteAsset(id);
+      await loadAssets();
+      onSuccess();
+    } catch {
+      alert('Failed to delete asset');
+    }
+  };
+
+  const handleCleanupAll = async () => {
+    if (!confirmCleanup) {
+      setConfirmCleanup(true);
+      return;
+    }
+    
+    if (!window.confirm('Are you sure you want to delete ALL assets, transactions, and holdings? This cannot be undone!')) {
+      setConfirmCleanup(false);
+      return;
+    }
+    
+    try {
+      await cleanupAllAssets();
+      setAssets([]);
+      setFilteredAssets([]);
+      setConfirmCleanup(false);
+      onSuccess();
+      alert('All data has been cleaned up.');
+    } catch {
+      alert('Failed to cleanup data');
+      setConfirmCleanup(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h2>Symbol Management</h2>
+        
+        <div className="search-box">
+          <input
+            type="text"
+            placeholder="Search symbols..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+        </div>
+
+        <div className="asset-list">
+          {loading ? (
+            <p>Loading...</p>
+          ) : filteredAssets.length === 0 ? (
+            <p className="empty">
+              {searchQuery ? 'No symbols found matching your search.' : 'No symbols available.'}
+            </p>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Name</th>
+                  <th>Type</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredAssets.map((asset) => (
+                  <tr key={asset.id}>
+                    <td>
+                      <span className={`type-badge ${asset.type}`}>{asset.symbol}</span>
+                    </td>
+                    <td>{asset.name}</td>
+                    <td>{TYPE_LABELS[asset.type] || asset.type}</td>
+                    <td>
+                      <button
+                        onClick={() => handleDeleteAsset(asset.id, asset.symbol)}
+                        className="icon-btn"
+                        style={{ background: 'transparent', border: 'none' }}
+                      >
+                        <Trash2 size={16} color="#ef4444" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        <div className="modal-actions">
+          <button 
+            onClick={handleCleanupAll} 
+            style={{ background: confirmCleanup ? '#ef4444' : undefined, color: confirmCleanup ? 'white' : undefined }}
+          >
+            {confirmCleanup ? 'Click again to confirm cleanup' : 'Delete All Data'}
+          </button>
+          <button type="button" onClick={onClose}>Close</button>
+        </div>
       </div>
     </div>
   );

@@ -18,6 +18,9 @@ export const getHolding = (assetId: number) => api.get<any>(`/holdings/${assetId
 export const getAssets = () => api.get<any[]>('/assets').then(r => r.data);
 export const createAsset = (data: any) => api.post<any>('/assets', data).then(r => r.data);
 export const deleteAsset = (id: number) => api.delete(`/assets/${id}`);
+export const deleteAssetBySymbol = (symbol: string) => api.delete(`/assets/by-symbol/${symbol}`);
+export const cleanupAllAssets = () => api.delete('/assets/cleanup/all');
+export const searchAssets = (query: string) => api.get<any[]>(`/assets/search/${query}`).then(r => r.data);
 
 // Transactions
 export const getTransactions = (params?: { asset_id?: number; limit?: number }) => 
