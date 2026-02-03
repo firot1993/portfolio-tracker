@@ -15,7 +15,12 @@ build/
 # IDE
 .vscode/
 .idea/
+.trae/
 
 # OS
 .DS_Store
 Thumbs.db
+
+# Test results
+test-results/
+playwright-report/

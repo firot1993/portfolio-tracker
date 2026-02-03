@@ -57,12 +57,74 @@ router.get('/:id/price', async (req, res) => {
   res.json({ symbol: asset.symbol, price, currency: asset.currency });
 });
 
-// Delete asset
+// Delete asset by ID (with cascade delete for holdings and transactions)
 router.delete('/:id', (req, res) => {
   const { id } = req.params;
-  run('DELETE FROM assets WHERE id = ?', [Number(id)]);
+  const assetId = Number(id);
+  
+  // First delete related transactions
+  run('DELETE FROM transactions WHERE asset_id = ?', [assetId]);
+  // Then delete related holdings
+  run('DELETE FROM holdings WHERE asset_id = ?', [assetId]);
+  // Finally delete the asset
+  run('DELETE FROM assets WHERE id = ?', [assetId]);
   saveDB();
   res.status(204).send();
+});
+
+// Delete asset by symbol (with cascade delete)
+router.delete('/by-symbol/:symbol', (req, res) => {
+  const { symbol } = req.params;
+  
+  // Get asset ID first
+  const asset = query('SELECT id FROM assets WHERE symbol = ?', [symbol.toUpperCase()])[0] as any;
+  
+  if (!asset) {
+    return res.status(404).json({ error: 'Asset not found' });
+  }
+  
+  // Delete related transactions
+  run('DELETE FROM transactions WHERE asset_id = ?', [asset.id]);
+  // Delete related holdings
+  run('DELETE FROM holdings WHERE asset_id = ?', [asset.id]);
+  // Delete the asset
+  run('DELETE FROM assets WHERE id = ?', [asset.id]);
+  saveDB();
+  res.status(204).send();
+});
+
+// Delete all assets (for testing cleanup)
+router.delete('/cleanup/all', (req, res) => {
+  run('DELETE FROM transactions');
+  run('DELETE FROM holdings');
+  run('DELETE FROM assets');
+  saveDB();
+  res.status(204).send();
+});
+
+// Delete test assets only (those starting with "TEST")
+router.delete('/cleanup/test-data', (req, res) => {
+  const testAssets = query("SELECT id FROM assets WHERE symbol LIKE 'TEST%'");
+  
+  for (const asset of testAssets) {
+    run('DELETE FROM transactions WHERE asset_id = ?', [asset.id]);
+    run('DELETE FROM holdings WHERE asset_id = ?', [asset.id]);
+    run('DELETE FROM assets WHERE id = ?', [asset.id]);
+  }
+  
+  saveDB();
+  res.status(204).send();
+});
+
+// Search assets by symbol or name
+router.get('/search/:query', (req, res) => {
+  const { query } = req.params;
+  const searchTerm = `%${query}%`;
+  const assets = query(
+    'SELECT * FROM assets WHERE symbol LIKE ? OR name LIKE ? ORDER BY type, symbol',
+    [searchTerm, searchTerm]
+  );
+  res.json(assets);
 });
 
 export default router;
