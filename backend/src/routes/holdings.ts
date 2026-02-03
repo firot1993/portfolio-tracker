@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { query } from '../db/index.js';
+import { query, run, lastInsertId, saveDB } from '../db/index.js';
 import { getAssetPrice, getUSDCNYRate } from '../services/priceService.js';
 
 const router = Router();
@@ -78,6 +78,52 @@ router.get('/:assetId', async (req, res) => {
     pnlPercent: pnl && costBasis ? (pnl / costBasis) * 100 : null,
     transactions,
   });
+});
+
+// Add holding directly
+router.post('/', (req, res) => {
+  const { asset_id, account_id, quantity, avg_cost } = req.body;
+  
+  if (!asset_id || !quantity || !avg_cost) {
+    return res.status(400).json({ error: 'Missing required fields: asset_id, quantity, avg_cost' });
+  }
+  
+  try {
+    // Check if holding already exists
+    const existing = query(
+      'SELECT * FROM holdings WHERE asset_id = ? AND (account_id = ? OR (account_id IS NULL AND ? IS NULL))',
+      [asset_id, account_id || null, account_id || null]
+    )[0] as any;
+    
+    if (existing) {
+      // Update existing holding
+      const newQty = existing.quantity + quantity;
+      const newAvgCost = (existing.avg_cost * existing.quantity + avg_cost * quantity) / newQty;
+      run(
+        `UPDATE holdings SET quantity = ?, avg_cost = ?, updated_at = datetime('now')
+         WHERE id = ?`,
+        [newQty, newAvgCost, existing.id]
+      );
+      saveDB();
+      
+      const updatedHolding = query('SELECT * FROM holdings WHERE id = ?', [existing.id])[0];
+      res.json(updatedHolding);
+    } else {
+      // Create new holding
+      run(
+        'INSERT INTO holdings (asset_id, account_id, quantity, avg_cost) VALUES (?, ?, ?, ?)',
+        [asset_id, account_id || null, quantity, avg_cost]
+      );
+      saveDB();
+      
+      const id = lastInsertId();
+      const newHolding = query('SELECT * FROM holdings WHERE id = ?', [id])[0];
+      res.status(201).json(newHolding);
+    }
+  } catch (error: any) {
+    console.error('Error adding holding:', error);
+    res.status(500).json({ error: 'Failed to add holding' });
+  }
 });
 
 export default router;

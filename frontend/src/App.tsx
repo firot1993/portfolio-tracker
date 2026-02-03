@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
-import { TrendingUp, TrendingDown, Plus, RefreshCw } from 'lucide-react';
-import { getPortfolioSummary, getTransactions, createAsset, createTransaction } from './services/api';
-import { PortfolioSummary, Transaction } from './types';
+import { TrendingUp, TrendingDown, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { getPortfolioSummary, getTransactions, createAsset, createTransaction, deleteTransaction, createHolding, getAssets } from './services/api';
 import './App.css';
 
 const COLORS: Record<string, string> = {
@@ -33,11 +32,12 @@ function formatPercent(value: number) {
 }
 
 function App() {
-  const [summary, setSummary] = useState<PortfolioSummary | null>(null);
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [summary, setSummary] = useState<any | null>(null);
+  const [transactions, setTransactions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddAsset, setShowAddAsset] = useState(false);
   const [showAddTx, setShowAddTx] = useState(false);
+  const [showAddHolding, setShowAddHolding] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const loadData = async () => {
@@ -63,7 +63,7 @@ function App() {
   }, []);
 
   const pieData = summary
-    ? Object.entries(summary.allocationPercent)
+    ? Object.entries(summary.allocationPercent || {})
         .filter(([, v]) => v > 0)
         .map(([type, value]) => ({
           name: TYPE_LABELS[type] || type,
@@ -101,6 +101,9 @@ function App() {
           <button onClick={() => setShowAddTx(true)}>
             <Plus size={16} /> Add Transaction
           </button>
+          <button onClick={() => setShowAddHolding(true)}>
+            <Plus size={16} /> Add Holding
+          </button>
           <button onClick={loadData} className="icon-btn">
             <RefreshCw size={16} />
           </button>
@@ -123,7 +126,7 @@ function App() {
             </div>
             <div className="card">
               <h3>USD/CNY Rate</h3>
-              <p className="value">{summary.usdcny.toFixed(4)}</p>
+              <p className="value">{summary.usdcny?.toFixed(4) || '-'}</p>
             </div>
           </div>
 
@@ -156,7 +159,7 @@ function App() {
 
             <div className="holdings-section">
               <h2>Holdings</h2>
-              {summary.holdings.length > 0 ? (
+              {summary.holdings && summary.holdings.length > 0 ? (
                 <table>
                   <thead>
                     <tr>
@@ -168,13 +171,13 @@ function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {summary.holdings.map((h) => (
+                    {summary.holdings.map((h: any) => (
                       <tr key={h.symbol}>
                         <td>
                           <span className={`type-badge ${h.type}`}>{h.symbol}</span>
                           <small>{h.name}</small>
                         </td>
-                        <td>{h.quantity.toFixed(4)}</td>
+                        <td>{h.quantity?.toFixed(4) || '-'}</td>
                         <td>{h.currentPrice ? formatCurrency(h.currentPrice) : '-'}</td>
                         <td>{formatCurrency(h.valueUSD)}</td>
                         <td className={h.pnl >= 0 ? 'positive' : 'negative'}>
@@ -185,7 +188,7 @@ function App() {
                   </tbody>
                 </table>
               ) : (
-                <p className="empty">No holdings yet. Add a transaction to get started!</p>
+                <p className="empty">No holdings yet. Add a transaction or holding to get started!</p>
               )}
             </div>
           </div>
@@ -202,6 +205,7 @@ function App() {
                     <th>Qty</th>
                     <th>Price</th>
                     <th>Total</th>
+                    <th>Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -209,10 +213,28 @@ function App() {
                     <tr key={tx.id}>
                       <td>{new Date(tx.date).toLocaleDateString()}</td>
                       <td>{tx.asset_symbol}</td>
-                      <td className={`tx-type ${tx.type}`}>{tx.type.toUpperCase()}</td>
+                      <td className={`tx-type ${tx.type}`}>{tx.type?.toUpperCase()}</td>
                       <td>{tx.quantity}</td>
                       <td>{formatCurrency(tx.price)}</td>
                       <td>{formatCurrency(tx.quantity * tx.price)}</td>
+                      <td>
+                        <button
+                          onClick={async () => {
+                            if (window.confirm('Are you sure you want to delete this transaction?')) {
+                              try {
+                                await deleteTransaction(tx.id);
+                                loadData();
+                              } catch {
+                                alert('Failed to delete transaction');
+                              }
+                            }
+                          }}
+                          className="icon-btn"
+                          style={{ background: 'transparent', border: 'none' }}
+                        >
+                          <Trash2 size={16} color="#ef4444" />
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -228,7 +250,10 @@ function App() {
         <AddAssetModal onClose={() => setShowAddAsset(false)} onSuccess={loadData} />
       )}
       {showAddTx && (
-        <AddTransactionModal onClose={() => setShowAddTx(false)} onSuccess={loadData} />
+        <AddTransactionModal key={Math.random()} onClose={() => setShowAddTx(false)} onSuccess={loadData} />
+      )}
+      {showAddHolding && (
+        <AddHoldingModal onClose={() => setShowAddHolding(false)} onSuccess={loadData} />
       )}
     </div>
   );
@@ -304,7 +329,7 @@ function AddAssetModal({ onClose, onSuccess }: { onClose: () => void; onSuccess:
 }
 
 function AddTransactionModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
-  const [assets, setAssets] = useState<{ id: number; symbol: string }[]>([]);
+  const [assets, setAssets] = useState<any[]>([]);
   const [form, setForm] = useState({
     asset_id: '',
     type: 'buy',
@@ -315,9 +340,7 @@ function AddTransactionModal({ onClose, onSuccess }: { onClose: () => void; onSu
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    import('./services/api').then(({ getAssets }) => {
-      getAssets().then((data) => setAssets(data.map((a) => ({ id: a.id, symbol: a.symbol }))));
-    });
+    getAssets().then((data) => setAssets(data));
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -398,6 +421,87 @@ function AddTransactionModal({ onClose, onSuccess }: { onClose: () => void; onSu
             <button type="button" onClick={onClose}>Cancel</button>
             <button type="submit" disabled={loading}>
               {loading ? 'Adding...' : 'Add Transaction'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function AddHoldingModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
+  const [assets, setAssets] = useState<any[]>([]);
+  const [form, setForm] = useState({
+    asset_id: '',
+    quantity: '',
+    avg_cost: '',
+  });
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    getAssets().then((data) => setAssets(data));
+  }, []);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      await createHolding({
+        asset_id: Number(form.asset_id),
+        quantity: Number(form.quantity),
+        avg_cost: Number(form.avg_cost),
+      });
+      onSuccess();
+      onClose();
+    } catch {
+      alert('Failed to add holding');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h2>Add Holding</h2>
+        <form onSubmit={handleSubmit}>
+          <label>
+            Asset
+            <select
+              value={form.asset_id}
+              onChange={(e) => setForm({ ...form, asset_id: e.target.value })}
+              required
+            >
+              <option value="">Select asset...</option>
+              {assets.map((a) => (
+                <option key={a.id} value={a.id}>{a.symbol}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Quantity
+            <input
+              type="number"
+              step="any"
+              value={form.quantity}
+              onChange={(e) => setForm({ ...form, quantity: e.target.value })}
+              required
+            />
+          </label>
+          <label>
+            Average Cost
+            <input
+              type="number"
+              step="any"
+              value={form.avg_cost}
+              onChange={(e) => setForm({ ...form, avg_cost: e.target.value })}
+              required
+            />
+          </label>
+          <div className="modal-actions">
+            <button type="button" onClick={onClose}>Cancel</button>
+            <button type="submit" disabled={loading}>
+              {loading ? 'Adding...' : 'Add Holding'}
             </button>
           </div>
         </form>

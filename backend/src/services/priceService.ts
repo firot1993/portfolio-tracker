@@ -1,5 +1,13 @@
 import axios from 'axios';
 
+// Create axios instance with timeout
+const api = axios.create({
+  timeout: 5000,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+
 // CoinGecko API for crypto prices
 export async function getCryptoPrice(symbol: string): Promise<number | null> {
   try {
@@ -11,10 +19,11 @@ export async function getCryptoPrice(symbol: string): Promise<number | null> {
       'XRP': 'ripple',
       'ADA': 'cardano',
       'DOGE': 'dogecoin',
+      'DOT': 'polkadot',
     };
     
     const coinId = coinMap[symbol.toUpperCase()] || symbol.toLowerCase();
-    const response = await axios.get(
+    const response = await api.get(
       `https://api.coingecko.com/api/v3/simple/price?ids=${coinId}&vs_currencies=usd`
     );
     return response.data[coinId]?.usd || null;
@@ -27,7 +36,7 @@ export async function getCryptoPrice(symbol: string): Promise<number | null> {
 // Yahoo Finance for US stocks
 export async function getUSStockPrice(symbol: string): Promise<number | null> {
   try {
-    const response = await axios.get(
+    const response = await api.get(
       `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=1d`
     );
     const result = response.data.chart.result?.[0];
@@ -46,7 +55,7 @@ export async function getCNStockPrice(symbol: string): Promise<number | null> {
     if (symbol.startsWith('0') || symbol.startsWith('3')) {
       prefix = 'sz';
     }
-    const response = await axios.get(
+    const response = await api.get(
       `https://hq.sinajs.cn/list=${prefix}${symbol}`,
       { headers: { Referer: 'https://finance.sina.com.cn' } }
     );
@@ -67,13 +76,13 @@ export async function getCNStockPrice(symbol: string): Promise<number | null> {
 export async function getGoldPrice(): Promise<number | null> {
   try {
     // Using metals.live free API
-    const response = await axios.get('https://api.metals.live/v1/spot/gold');
+    const response = await api.get('https://api.metals.live/v1/spot/gold');
     return response.data?.[0]?.price || null;
   } catch (error) {
     console.error('Failed to fetch gold price:', error);
     // Fallback: try alternative
     try {
-      const alt = await axios.get('https://forex-data-feed.swissquote.com/public-quotes/bboquotes/instrument/XAU/USD');
+      const alt = await api.get('https://forex-data-feed.swissquote.com/public-quotes/bboquotes/instrument/XAU/USD');
       return alt.data?.[0]?.spreadProfilePrices?.[0]?.ask || null;
     } catch {
       return null;
@@ -84,7 +93,7 @@ export async function getGoldPrice(): Promise<number | null> {
 // FX rate USD/CNY
 export async function getUSDCNYRate(): Promise<number | null> {
   try {
-    const response = await axios.get(
+    const response = await api.get(
       'https://query1.finance.yahoo.com/v8/finance/chart/USDCNY=X?interval=1d&range=1d'
     );
     return response.data.chart.result?.[0]?.meta?.regularMarketPrice || null;
