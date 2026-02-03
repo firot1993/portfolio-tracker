@@ -41,6 +41,22 @@ router.post('/', (req, res) => {
     return res.status(400).json({ error: 'Missing required fields' });
   }
   
+  if (quantity <= 0) {
+    return res.status(400).json({ error: 'Quantity must be greater than 0' });
+  }
+  
+  if (price < 0) {
+    return res.status(400).json({ error: 'Price cannot be negative' });
+  }
+  
+  if (fee < 0) {
+    return res.status(400).json({ error: 'Fee cannot be negative' });
+  }
+  
+  if (!['buy', 'sell', 'transfer_in', 'transfer_out'].includes(type)) {
+    return res.status(400).json({ error: 'Invalid transaction type' });
+  }
+  
   // Insert transaction
   run(
     `INSERT INTO transactions (asset_id, account_id, type, quantity, price, fee, date, notes)
@@ -114,9 +130,57 @@ router.put('/:id', (req, res) => {
 // Delete transaction
 router.delete('/:id', (req, res) => {
   const { id } = req.params;
-  run('DELETE FROM transactions WHERE id = ?', [Number(id)]);
-  saveDB();
-  res.status(204).send();
+  
+  try {
+    // Get transaction details before deleting
+    const transaction = query('SELECT * FROM transactions WHERE id = ?', [Number(id)])[0] as any;
+    
+    if (!transaction) {
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+    
+    // Reverse update holdings
+    const existing = query(
+      'SELECT * FROM holdings WHERE asset_id = ? AND (account_id = ? OR (account_id IS NULL AND ? IS NULL))',
+      [transaction.asset_id, transaction.account_id || null, transaction.account_id || null]
+    )[0] as any;
+      if (existing) {
+        if (transaction.type === 'buy' || transaction.type === 'transfer_in') {
+          // Reverse buy/transfer_in: decrease quantity
+          const newQty = existing.quantity - transaction.quantity;
+          if (newQty <= 0) {
+            run('DELETE FROM holdings WHERE id = ?', [existing.id]);
+          } else {
+            // Recalculate average cost
+            const totalCost = existing.avg_cost * existing.quantity - transaction.price * transaction.quantity;
+            const newAvgCost = totalCost / newQty;
+            run(
+              `UPDATE holdings SET quantity = ?, avg_cost = ?, updated_at = datetime('now')
+               WHERE id = ?`,
+              [newQty, newAvgCost, existing.id]
+            );
+          }
+        } else if (transaction.type === 'sell' || transaction.type === 'transfer_out') {
+          // Reverse sell/transfer_out: increase quantity
+          // Note: We can't accurately reconstruct the average cost after a sell
+          // So we keep the existing average cost and just add back the quantity
+          const newQty = existing.quantity + transaction.quantity;
+          run(
+            `UPDATE holdings SET quantity = ?, updated_at = datetime('now')
+             WHERE id = ?`,
+            [newQty, existing.id]
+          );
+        }
+      }
+    
+    // Delete transaction
+    run('DELETE FROM transactions WHERE id = ?', [Number(id)]);
+    saveDB();
+    res.status(204).send();
+  } catch (error: any) {
+    console.error('Error deleting transaction:', error);
+    res.status(500).json({ error: 'Failed to delete transaction' });
+  }
 });
 
 export default router;
