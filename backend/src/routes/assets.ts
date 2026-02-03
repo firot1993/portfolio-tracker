@@ -118,8 +118,8 @@ router.delete('/cleanup/test-data', (req, res) => {
 
 // Search assets by symbol or name
 router.get('/search/:query', (req, res) => {
-  const { query } = req.params;
-  const searchTerm = `%${query}%`;
+  const { query: searchQuery } = req.params;
+  const searchTerm = `%${searchQuery}%`;
   const assets = query(
     'SELECT * FROM assets WHERE symbol LIKE ? OR name LIKE ? ORDER BY type, symbol',
     [searchTerm, searchTerm]

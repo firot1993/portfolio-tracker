@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import { TrendingUp, TrendingDown, Plus, RefreshCw, Trash2 } from 'lucide-react';
-import { getPortfolioSummary, getTransactions, createAsset, createTransaction, deleteTransaction, createHolding, getAssets, deleteAsset, cleanupAllAssets, searchAssets } from './services/api';
+import { getPortfolioSummary, getTransactions, createAsset, createTransaction, deleteTransaction, createHolding, getAssets, deleteAsset, cleanupAllAssets } from './services/api';
 import './App.css';
 
 const COLORS: Record<string, string> = {
