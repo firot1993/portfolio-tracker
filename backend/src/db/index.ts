@@ -4,9 +4,29 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dbPath = path.join(__dirname, '../../data/portfolio.db');
+
+const env = process.env.NODE_ENV || 'development';
+const customPath = process.env.DATABASE_PATH;
+
+let dbPath: string;
+
+if (customPath) {
+  dbPath = customPath;
+} else if (env === 'production') {
+  dbPath = path.join(__dirname, '../../data/portfolio.db');
+} else {
+  dbPath = path.join(__dirname, '../../data/portfolio.dev.db');
+}
 
 let db: SqlJsDatabase;
+
+export function getEnvInfo() {
+  return {
+    env,
+    dbPath,
+    isCustomPath: !!customPath
+  };
+}
 
 export async function initDB(inMemory = false): Promise<SqlJsDatabase> {
   const SQL = await initSqlJs();
