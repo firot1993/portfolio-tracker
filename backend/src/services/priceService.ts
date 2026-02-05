@@ -9,37 +9,140 @@ const api = axios.create({
   },
 });
 
-// Price cache implementation
+// Price cache implementation with LRU eviction
 interface CacheItem {
   value: number;
   timestamp: number;
+  lastAccess: number;
 }
 
-// Cache object with TTL
-const priceCache: Record<string, CacheItem> = {};
-const CACHE_TTL = config.cache.ttl;
+// LRU Cache class with size limit and TTL support
+class LRUCache {
+  private cache: Map<string, CacheItem>;
+  private maxSize: number;
+  private ttl: number;
+  private stats: {
+    hits: number;
+    misses: number;
+    evictions: number;
+    size: number;
+  };
+
+  constructor(maxSize: number = 1000, ttl: number = 300000) {
+    this.cache = new Map();
+    this.maxSize = maxSize;
+    this.ttl = ttl;
+    this.stats = {
+      hits: 0,
+      misses: 0,
+      evictions: 0,
+      size: 0,
+    };
+  }
+
+  get(key: string): number | null {
+    const item = this.cache.get(key);
+    
+    if (!item) {
+      this.stats.misses++;
+      return null;
+    }
+
+    const now = Date.now();
+    
+    // Check if expired
+    if (now - item.timestamp > this.ttl) {
+      this.cache.delete(key);
+      this.stats.misses++;
+      this.stats.size = this.cache.size;
+      return null;
+    }
+
+    // Update last access time for LRU
+    item.lastAccess = now;
+    this.cache.delete(key);
+    this.cache.set(key, item);
+    
+    this.stats.hits++;
+    return item.value;
+  }
+
+  set(key: string, value: number): void {
+    // Check if cache is full and need to evict
+    if (this.cache.size >= this.maxSize && !this.cache.has(key)) {
+      this.evictLRU();
+    }
+
+    const now = Date.now();
+    this.cache.set(key, {
+      value,
+      timestamp: now,
+      lastAccess: now,
+    });
+    this.stats.size = this.cache.size;
+  }
+
+  private evictLRU(): void {
+    let oldestKey: string | null = null;
+    let oldestAccess = Infinity;
+    
+    for (const [key, item] of this.cache.entries()) {
+      if (item.lastAccess < oldestAccess) {
+        oldestAccess = item.lastAccess;
+        oldestKey = key;
+      }
+    }
+    
+    if (oldestKey) {
+      this.cache.delete(oldestKey);
+      this.stats.evictions++;
+      this.stats.size = this.cache.size;
+    }
+  }
+
+  getStats(): { hits: number; misses: number; evictions: number; size: number; hitRate: string } {
+    const total = this.stats.hits + this.stats.misses;
+    const hitRate = total > 0 ? ((this.stats.hits / total) * 100).toFixed(2) : '0.00';
+    
+    return {
+      hits: this.stats.hits,
+      misses: this.stats.misses,
+      evictions: this.stats.evictions,
+      size: this.stats.size,
+      hitRate: `${hitRate}%`,
+    };
+  }
+
+  clear(): void {
+    this.cache.clear();
+    this.stats = {
+      hits: 0,
+      misses: 0,
+      evictions: 0,
+      size: 0,
+    };
+  }
+
+  getSize(): number {
+    return this.cache.size;
+  }
+
+  getMaxSize(): number {
+    return this.maxSize;
+  }
+}
+
+// Create cache instance with config TTL
+const priceCache = new LRUCache(1000, config.cache.ttl);
 
 // Get cached value if valid
 function getCachedValue(key: string): number | null {
-  const item = priceCache[key];
-  if (item) {
-    const now = Date.now();
-    if (now - item.timestamp < CACHE_TTL) {
-      return item.value;
-    } else {
-      // Remove expired item
-      delete priceCache[key];
-    }
-  }
-  return null;
+  return priceCache.get(key);
 }
 
 // Set value in cache
 function setCachedValue(key: string, value: number): void {
-  priceCache[key] = {
-    value,
-    timestamp: Date.now(),
-  };
+  priceCache.set(key, value);
 }
 
 // Generic cache wrapper
@@ -65,6 +168,20 @@ function withCache<T extends (...args: any[]) => Promise<number | null>>(
     }
     
     return value;
+  };
+}
+
+// Export cache statistics for monitoring
+export function getCacheStats() {
+  return priceCache.getStats();
+}
+
+// Export cache info for debugging
+export function getCacheInfo() {
+  return {
+    size: priceCache.getSize(),
+    maxSize: priceCache.getMaxSize(),
+    ttl: config.cache.ttl,
   };
 }
 
