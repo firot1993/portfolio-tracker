@@ -130,6 +130,8 @@ jobs:
   deploy-production:
     name: Deploy Production
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     needs: [e2e-test]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:

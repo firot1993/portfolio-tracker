@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import { initDB } from './db/index.js';
+import { initDB, getEnvInfo } from './db/index.js';
 import accountsRouter from './routes/accounts.js';
 import assetsRouter from './routes/assets.js';
 import transactionsRouter from './routes/transactions.js';
@@ -27,8 +27,11 @@ app.get('/api/health', (req, res) => {
 
 // Initialize DB then start server
 initDB().then(() => {
+  const { env, dbPath } = getEnvInfo();
   app.listen(PORT, () => {
     console.log(`🚀 Portfolio Tracker API running on http://localhost:${PORT}`);
+    console.log(`   Environment: ${env}`);
+    console.log(`   Database: ${dbPath}`);
   });
 }).catch(err => {
   console.error('Failed to initialize database:', err);
