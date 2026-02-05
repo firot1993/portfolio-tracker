@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const env = process.env.NODE_ENV || 'development';
@@ -11,11 +12,14 @@ const customPath = process.env.DATABASE_PATH;
 let dbPath: string;
 
 if (customPath) {
+  // Use custom path if provided
   dbPath = customPath;
-} else if (env === 'production') {
-  dbPath = path.join(__dirname, '../../data/portfolio.db');
 } else {
-  dbPath = path.join(__dirname, '../../data/portfolio.dev.db');
+  // Default: Store in user's home directory, outside of code
+  const homeDir = process.env.HOME || process.env.USERPROFILE || '.';
+  const dataDir = path.join(homeDir, '.portfolio-tracker');
+  const dbName = env === 'production' ? 'portfolio.db' : 'portfolio.dev.db';
+  dbPath = path.join(dataDir, dbName);
 }
 
 let db: SqlJsDatabase;
@@ -57,7 +61,9 @@ export async function initDB(inMemory = false): Promise<SqlJsDatabase> {
       name TEXT NOT NULL,
       type TEXT NOT NULL,
       exchange TEXT,
-      currency TEXT DEFAULT 'USD'
+      currency TEXT DEFAULT 'USD',
+      current_price REAL,
+      price_updated_at DATETIME
     );
 
     CREATE TABLE IF NOT EXISTS transactions (
@@ -91,7 +97,36 @@ export async function initDB(inMemory = false): Promise<SqlJsDatabase> {
       timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     );
   `);
-  
+
+  // Migration: Add current_price columns if they don't exist (for existing databases)
+  try {
+    db.run('ALTER TABLE assets ADD COLUMN current_price REAL');
+  } catch {
+    // Column may already exist, ignore error
+  }
+  try {
+    db.run('ALTER TABLE assets ADD COLUMN price_updated_at DATETIME');
+  } catch {
+    // Column may already exist, ignore error
+  }
+
+  // Historical Performance Charts: Add price_snapshots table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS price_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      snapshot_date DATE NOT NULL UNIQUE,
+      total_value_usd REAL,
+      total_cost_usd REAL,
+      usdcny_rate REAL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Historical Performance Charts: Add indexes for better query performance
+  db.run(`CREATE INDEX IF NOT EXISTS idx_price_history_asset_date ON price_history(asset_id, timestamp)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_price_snapshots_date ON price_snapshots(snapshot_date)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date)`);
+
   saveDB();
   return db;
 }

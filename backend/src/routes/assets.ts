@@ -1,21 +1,29 @@
 import { Router } from 'express';
 import { query, run, lastInsertId, saveDB } from '../db/index.js';
 import { getAssetPrice } from '../services/priceService.js';
+import { defaultAssets } from '../db/seeds.js';
 
 const router = Router();
 
-// Get all assets with current prices
+// Get all assets (without prices by default to avoid rate limits)
+// Use ?includePrices=true to fetch prices (may be slow for many assets)
 router.get('/', async (req, res) => {
+  const { includePrices } = req.query;
   const assets = query('SELECT * FROM assets ORDER BY type, symbol');
   
-  const assetsWithPrices = await Promise.all(
-    assets.map(async (asset: any) => {
-      const price = await getAssetPrice(asset.symbol, asset.type);
-      return { ...asset, currentPrice: price };
-    })
-  );
-  
-  res.json(assetsWithPrices);
+  // Only fetch prices if explicitly requested
+  if (includePrices === 'true') {
+    const assetsWithPrices = await Promise.all(
+      assets.map(async (asset: any) => {
+        const price = await getAssetPrice(asset.symbol, asset.type);
+        return { ...asset, currentPrice: price };
+      })
+    );
+    res.json(assetsWithPrices);
+  } else {
+    // Return assets without prices (frontend can fetch individually)
+    res.json(assets.map((asset: any) => ({ ...asset, currentPrice: null })));
+  }
 });
 
 // Add new asset
@@ -55,6 +63,43 @@ router.get('/:id/price', async (req, res) => {
   
   const price = await getAssetPrice(asset.symbol, asset.type);
   res.json({ symbol: asset.symbol, price, currency: asset.currency });
+});
+
+// Batch fetch prices for multiple assets (with delays to avoid rate limits)
+// POST body: { ids: number[] }
+router.post('/prices/batch', async (req, res) => {
+  const { ids } = req.body;
+  
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'ids array is required' });
+  }
+  
+  // Limit batch size to prevent abuse
+  if (ids.length > 50) {
+    return res.status(400).json({ error: 'Maximum 50 assets per batch' });
+  }
+  
+  const results: Array<{ id: number; symbol: string; price: number | null; currency: string }> = [];
+  
+  // Fetch prices with small delays to avoid rate limits
+  for (const id of ids) {
+    const asset = query('SELECT * FROM assets WHERE id = ?', [Number(id)])[0] as any;
+    if (asset) {
+      const price = await getAssetPrice(asset.symbol, asset.type);
+      results.push({
+        id: Number(id),
+        symbol: asset.symbol,
+        price,
+        currency: asset.currency
+      });
+      // Small delay between requests to avoid rate limits
+      if (ids.length > 5) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
+  }
+  
+  res.json(results);
 });
 
 // Delete asset by ID (with cascade delete for holdings and transactions)
@@ -116,7 +161,7 @@ router.delete('/cleanup/test-data', (req, res) => {
   res.status(204).send();
 });
 
-// Search assets by symbol or name
+// Search assets by symbol or name (without prices)
 router.get('/search/:query', (req, res) => {
   const { query: searchQuery } = req.params;
   const searchTerm = `%${searchQuery}%`;
@@ -124,7 +169,50 @@ router.get('/search/:query', (req, res) => {
     'SELECT * FROM assets WHERE symbol LIKE ? OR name LIKE ? ORDER BY type, symbol',
     [searchTerm, searchTerm]
   );
-  res.json(assets);
+  res.json(assets.map((asset: any) => ({ ...asset, currentPrice: null })));
+});
+
+// Seed default assets (manual trigger)
+// POST /api/assets/seed
+router.post('/seed', (req, res) => {
+  const { force } = req.body;
+  
+  // Check existing assets
+  const existingCount = (query('SELECT COUNT(*) as count FROM assets')[0] as { count: number }).count;
+  
+  if (existingCount > 0 && !force) {
+    return res.status(409).json({
+      error: 'Database already contains assets',
+      existingCount,
+      message: 'Use force: true to seed anyway (may create duplicates)'
+    });
+  }
+  
+  let successCount = 0;
+  let skipCount = 0;
+  
+  for (const asset of defaultAssets) {
+    try {
+      run(
+        'INSERT INTO assets (symbol, name, type, exchange, currency) VALUES (?, ?, ?, ?, ?)',
+        [asset.symbol, asset.name, asset.type, asset.exchange || null, asset.currency]
+      );
+      successCount++;
+    } catch (error: any) {
+      if (error.message?.includes('UNIQUE')) {
+        skipCount++;
+      }
+    }
+  }
+  
+  saveDB();
+  
+  res.json({
+    success: true,
+    added: successCount,
+    skipped: skipCount,
+    total: defaultAssets.length
+  });
 });
 
 export default router;
