@@ -113,12 +113,17 @@ function getRangeDates(range: string): Date[] {
   return dates;
 }
 
+function toSqliteDateTime(date: Date): string {
+  const iso = date.toISOString();
+  return iso.slice(0, 19).replace('T', ' ');
+}
+
 async function recordPriceHistory(assetId: number, price: number, timestamp?: Date): Promise<void> {
   if (timestamp) {
     run('INSERT OR IGNORE INTO price_history (asset_id, price, timestamp) VALUES (?, ?, ?)', [
       assetId,
       price,
-      timestamp.toISOString(),
+      toSqliteDateTime(timestamp),
     ]);
   } else {
     run('INSERT INTO price_history (asset_id, price) VALUES (?, ?)', [assetId, price]);

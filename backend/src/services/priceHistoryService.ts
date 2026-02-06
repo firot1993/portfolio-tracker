@@ -13,6 +13,13 @@ export interface AssetHistoryPoint {
   price: number;
 }
 
+let lastPriceTimestampMs = 0;
+
+function toSqliteDateTimeMs(date: Date): string {
+  const iso = date.toISOString(); // YYYY-MM-DDTHH:MM:SS.sssZ
+  return iso.slice(0, 23).replace('T', ' '); // YYYY-MM-DD HH:MM:SS.sss
+}
+
 /**
  * Record a daily snapshot of the portfolio value
  * This should be called periodically (e.g., once per day)
@@ -115,7 +122,12 @@ export async function getAssetHistory(assetId: number, range: string): Promise<A
  * Record a price point for an asset
  */
 export function recordAssetPrice(assetId: number, price: number): void {
-  const timestamp = new Date().toISOString();
+  let nowMs = Date.now();
+  if (nowMs <= lastPriceTimestampMs) {
+    nowMs = lastPriceTimestampMs + 1;
+  }
+  lastPriceTimestampMs = nowMs;
+  const timestamp = toSqliteDateTimeMs(new Date(nowMs));
   run(
     'INSERT INTO price_history (asset_id, price, timestamp) VALUES (?, ?, ?)',
     [assetId, price, timestamp]
