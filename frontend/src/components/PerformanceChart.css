@@ -1,0 +1,287 @@
+.performance-chart {
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 12px;
+  padding: 20px;
+  width: 100%;
+}
+
+.chart-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.chart-title-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chart-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.chart-export-btn {
+  background: transparent;
+  border: 1px solid #333;
+  color: #999;
+  padding: 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.chart-export-btn:hover {
+  background: #333;
+  color: #fff;
+}
+
+.chart-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #fff;
+  margin: 0;
+}
+
+.chart-stats {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.chart-current-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.chart-change {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+.chart-change.positive {
+  color: #22c55e;
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.chart-change.negative {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.chart-time-ranges {
+  display: flex;
+  gap: 4px;
+  background: #0a0a0a;
+  padding: 4px;
+  border-radius: 8px;
+}
+
+.chart-range-btn {
+  padding: 6px 12px;
+  border: none;
+  background: transparent;
+  color: #999;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.chart-range-btn:hover:not(:disabled) {
+  color: #fff;
+  background: #333;
+}
+
+.chart-range-btn.active {
+  color: #fff;
+  background: #0052CC;
+}
+
+.chart-range-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.chart-container {
+  width: 100%;
+  height: 320px;
+  position: relative;
+}
+
+.chart-loading,
+.chart-error,
+.chart-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #999;
+  gap: 12px;
+}
+
+.chart-spinner {
+  animation: spin 1s linear infinite;
+  color: #0052CC;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.chart-retry-btn {
+  padding: 8px 16px;
+  background: #0052CC;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.chart-retry-btn:hover {
+  background: #0065FF;
+}
+
+.chart-empty p {
+  margin: 0;
+  font-size: 13px;
+  color: #666;
+}
+
+/* Custom Tooltip Styles */
+.chart-tooltip {
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  min-width: 180px;
+}
+
+.chart-tooltip-date {
+  font-size: 12px;
+  color: #999;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #333;
+}
+
+.chart-tooltip-value,
+.chart-tooltip-cost,
+.chart-tooltip-pnl {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 4px;
+  font-size: 13px;
+}
+
+.chart-tooltip-label {
+  color: #999;
+}
+
+.chart-tooltip-amount {
+  font-weight: 600;
+  color: #fff;
+}
+
+.chart-tooltip-pnl.positive .chart-tooltip-amount {
+  color: #22c55e;
+}
+
+.chart-tooltip-pnl.negative .chart-tooltip-amount {
+  color: #ef4444;
+}
+
+/* Chart Footer */
+.chart-footer {
+  display: flex;
+  justify-content: space-around;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #333;
+}
+
+.chart-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.chart-stat-label {
+  font-size: 11px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.chart-stat-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+  .performance-chart {
+    padding: 16px;
+  }
+
+  .chart-header {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .chart-time-ranges {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .chart-range-btn {
+    flex-shrink: 0;
+  }
+
+  .chart-stats {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+
+  .chart-current-value {
+    font-size: 20px;
+  }
+
+  .chart-container {
+    height: 250px;
+  }
+
+  .chart-footer {
+    gap: 16px;
+  }
+}
