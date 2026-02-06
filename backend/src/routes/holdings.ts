@@ -5,9 +5,13 @@ import { getAssetPrice, getUSDCNYRate } from '../services/priceService.js';
 const router = Router();
 
 // Get all holdings with current values
+// Query params:
+//   - includePrices: 'false' to skip price fetching (use cached prices)
 router.get('/', async (req, res) => {
+  const includePrices = req.query.includePrices !== 'false'; // default true
+  
   const holdings = query(`
-    SELECT h.*, a.symbol, a.name, a.type, a.currency, acc.name as account_name
+    SELECT h.*, a.symbol, a.name, a.type, a.currency, a.current_price, a.price_updated_at, acc.name as account_name
     FROM holdings h
     JOIN assets a ON h.asset_id = a.id
     LEFT JOIN accounts acc ON h.account_id = acc.id
@@ -18,7 +22,31 @@ router.get('/', async (req, res) => {
   
   const holdingsWithValue = await Promise.all(
     holdings.map(async (h: any) => {
-      const currentPrice = await getAssetPrice(h.symbol, h.type);
+      let currentPrice: number | null = null;
+      
+      if (includePrices) {
+        // Use cached price from database if available and fresh (< 5 minutes)
+        const priceAge = h.price_updated_at 
+          ? Date.now() - new Date(h.price_updated_at).getTime()
+          : Infinity;
+        
+        if (h.current_price !== null && priceAge < 5 * 60 * 1000) {
+          currentPrice = h.current_price;
+        } else {
+          // Fetch fresh price if cache is stale or missing
+          currentPrice = await getAssetPrice(h.symbol, h.type);
+          if (currentPrice !== null) {
+            run(
+              'UPDATE assets SET current_price = ?, price_updated_at = datetime("now") WHERE id = ?',
+              [currentPrice, h.asset_id]
+            );
+          }
+        }
+      } else {
+        // Just return cached price without fetching
+        currentPrice = h.current_price;
+      }
+      
       const currentValue = currentPrice ? currentPrice * h.quantity : null;
       const costBasis = h.avg_cost * h.quantity;
       const pnl = currentValue ? currentValue - costBasis : null;
@@ -41,6 +69,11 @@ router.get('/', async (req, res) => {
     })
   );
   
+  // Save any price updates
+  if (includePrices) {
+    saveDB();
+  }
+  
   res.json(holdingsWithValue);
 });
 
@@ -49,7 +82,7 @@ router.get('/:assetId', async (req, res) => {
   const { assetId } = req.params;
   
   const holding = query(`
-    SELECT h.*, a.symbol, a.name, a.type, a.currency
+    SELECT h.*, a.symbol, a.name, a.type, a.currency, a.current_price, a.price_updated_at
     FROM holdings h
     JOIN assets a ON h.asset_id = a.id
     WHERE h.asset_id = ?
@@ -59,7 +92,23 @@ router.get('/:assetId', async (req, res) => {
     return res.status(404).json({ error: 'Holding not found' });
   }
   
-  const currentPrice = await getAssetPrice(holding.symbol, holding.type);
+  // Use cached price if fresh, otherwise fetch new price
+  const priceAge = holding.price_updated_at 
+    ? Date.now() - new Date(holding.price_updated_at).getTime()
+    : Infinity;
+  
+  let currentPrice = holding.current_price;
+  if (currentPrice === null || priceAge > 5 * 60 * 1000) {
+    currentPrice = await getAssetPrice(holding.symbol, holding.type);
+    if (currentPrice !== null) {
+      run(
+        'UPDATE assets SET current_price = ?, price_updated_at = datetime("now") WHERE id = ?',
+        [currentPrice, holding.asset_id]
+      );
+      saveDB();
+    }
+  }
+  
   const currentValue = currentPrice ? currentPrice * holding.quantity : null;
   const costBasis = holding.avg_cost * holding.quantity;
   const pnl = currentValue ? currentValue - costBasis : null;

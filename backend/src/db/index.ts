@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const env = process.env.NODE_ENV || 'development';
@@ -11,11 +12,14 @@ const customPath = process.env.DATABASE_PATH;
 let dbPath: string;
 
 if (customPath) {
+  // Use custom path if provided
   dbPath = customPath;
-} else if (env === 'production') {
-  dbPath = path.join(__dirname, '../../data/portfolio.db');
 } else {
-  dbPath = path.join(__dirname, '../../data/portfolio.dev.db');
+  // Default: Store in user's home directory, outside of code
+  const homeDir = process.env.HOME || process.env.USERPROFILE || '.';
+  const dataDir = path.join(homeDir, '.portfolio-tracker');
+  const dbName = env === 'production' ? 'portfolio.db' : 'portfolio.dev.db';
+  dbPath = path.join(dataDir, dbName);
 }
 
 let db: SqlJsDatabase;
@@ -57,7 +61,9 @@ export async function initDB(inMemory = false): Promise<SqlJsDatabase> {
       name TEXT NOT NULL,
       type TEXT NOT NULL,
       exchange TEXT,
-      currency TEXT DEFAULT 'USD'
+      currency TEXT DEFAULT 'USD',
+      current_price REAL,
+      price_updated_at DATETIME
     );
 
     CREATE TABLE IF NOT EXISTS transactions (
@@ -91,7 +97,76 @@ export async function initDB(inMemory = false): Promise<SqlJsDatabase> {
       timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     );
   `);
-  
+
+  // Migration: Add current_price columns if they don't exist (for existing databases)
+  try {
+    db.run('ALTER TABLE assets ADD COLUMN current_price REAL');
+  } catch {
+    // Column may already exist, ignore error
+  }
+  try {
+    db.run('ALTER TABLE assets ADD COLUMN price_updated_at DATETIME');
+  } catch {
+    // Column may already exist, ignore error
+  }
+
+  // Historical Performance Charts: Add price_snapshots table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS price_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      snapshot_date DATE NOT NULL UNIQUE,
+      total_value_usd REAL,
+      total_cost_usd REAL,
+      usdcny_rate REAL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Historical Performance Charts: Collector run audit
+  db.run(`
+    CREATE TABLE IF NOT EXISTS collector_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_type TEXT NOT NULL,
+      run_key TEXT NOT NULL,
+      status TEXT NOT NULL,
+      started_at DATETIME NOT NULL,
+      finished_at DATETIME,
+      error_message TEXT
+    )
+  `);
+
+  // Historical Performance Charts: Backfill job queue
+  db.run(`
+    CREATE TABLE IF NOT EXISTS backfill_jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      asset_id INTEGER NOT NULL REFERENCES assets(id),
+      range TEXT NOT NULL,
+      status TEXT NOT NULL,
+      requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      completed_at DATETIME,
+      error_message TEXT
+    )
+  `);
+
+  // Historical Performance Charts: Add indexes for better query performance
+  db.run(`CREATE INDEX IF NOT EXISTS idx_price_history_asset_date ON price_history(asset_id, timestamp)`);
+  try {
+    db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_price_history_unique ON price_history(asset_id, timestamp)`);
+  } catch {
+    // Existing duplicates may prevent unique index creation; keep non-unique index.
+  }
+  db.run(`CREATE INDEX IF NOT EXISTS idx_price_snapshots_date ON price_snapshots(snapshot_date)`);
+  db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_collector_runs_key ON collector_runs(run_type, run_key)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_backfill_jobs_status ON backfill_jobs(status)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_backfill_jobs_asset ON backfill_jobs(asset_id)`);
+  // Prevent duplicate queued backfill jobs for same asset and range
+  try {
+    db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_backfill_jobs_unique ON backfill_jobs(asset_id, range) WHERE status = 'queued'`);
+  } catch {
+    // Index may already exist or DB doesn't support partial indexes
+  }
+  db.run(`CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date)`);
+
   saveDB();
   return db;
 }
@@ -132,4 +207,30 @@ export function run(sql: string, params: any[] = []): number {
 export function lastInsertId(): number {
   const result = db.exec('SELECT last_insert_rowid() as id');
   return result[0]?.values[0]?.[0] as number || 0;
+}
+
+// Transaction support
+export function beginTransaction(): void {
+  db.run('BEGIN TRANSACTION');
+}
+
+export function commitTransaction(): void {
+  db.run('COMMIT');
+}
+
+export function rollbackTransaction(): void {
+  db.run('ROLLBACK');
+}
+
+// Execute function within a transaction
+export async function withTransaction<T>(fn: () => T): Promise<T> {
+  beginTransaction();
+  try {
+    const result = await fn();
+    commitTransaction();
+    return result;
+  } catch (error) {
+    rollbackTransaction();
+    throw error;
+  }
 }

@@ -307,6 +307,94 @@ export const getUSDCNYRate = withCache(
   () => 'usd_cny'
 );
 
+function toDateStringUTC(timestampMs: number): string {
+  return new Date(timestampMs).toISOString().split('T')[0];
+}
+
+async function fetchYahooDailyHistory(ticker: string, startDate: string, endDate: string): Promise<Array<{ date: string; price: number }>> {
+  const startSec = Math.floor(new Date(startDate).getTime() / 1000);
+  const endSec = Math.floor(new Date(endDate).getTime() / 1000) + 86400;
+
+  const response = await api.get(
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?period1=${startSec}&period2=${endSec}&interval=1d&includeAdjustedClose=true&events=div%7Csplit`
+  );
+
+  const result = response.data.chart?.result?.[0];
+  const timestamps: number[] = result?.timestamp || [];
+  const quote = result?.indicators?.quote?.[0];
+  const adj = result?.indicators?.adjclose?.[0];
+  const closes: Array<number | null> = adj?.adjclose || quote?.close || [];
+
+  const points: Array<{ date: string; price: number }> = [];
+  for (let i = 0; i < timestamps.length; i++) {
+    const price = closes[i];
+    if (price === null || price === undefined) continue;
+    points.push({ date: toDateStringUTC(timestamps[i] * 1000), price });
+  }
+  return points.sort((a, b) => a.date.localeCompare(b.date));
+}
+
+async function fetchCoinGeckoDailyHistory(symbol: string, startDate: string, endDate: string): Promise<Array<{ date: string; price: number }>> {
+  const coinMap: Record<string, string> = {
+    'BTC': 'bitcoin',
+    'ETH': 'ethereum',
+    'SOL': 'solana',
+    'BNB': 'binancecoin',
+    'XRP': 'ripple',
+    'ADA': 'cardano',
+    'DOGE': 'dogecoin',
+    'DOT': 'polkadot',
+  };
+  const coinId = coinMap[symbol.toUpperCase()] || symbol.toLowerCase();
+  const from = Math.floor(new Date(startDate).getTime() / 1000);
+  const to = Math.floor(new Date(endDate).getTime() / 1000) + 86400;
+
+  const response = await api.get(
+    `https://api.coingecko.com/api/v3/coins/${encodeURIComponent(coinId)}/market_chart/range?vs_currency=usd&from=${from}&to=${to}`
+  );
+  const prices: Array<[number, number]> = response.data?.prices || [];
+
+  // Reduce to daily close by taking the last entry per day
+  const byDate = new Map<string, number>();
+  for (const [tsMs, price] of prices) {
+    const date = toDateStringUTC(tsMs);
+    byDate.set(date, price);
+  }
+  return Array.from(byDate.entries())
+    .map(([date, price]) => ({ date, price }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function getYahooTicker(symbol: string, type: string): string {
+  if (type === 'gold') return 'XAUUSD=X';
+  if (type === 'stock_cn') {
+    if (symbol.endsWith('.SS') || symbol.endsWith('.SZ')) return symbol;
+    if (symbol.startsWith('6')) return `${symbol}.SS`;
+    return `${symbol}.SZ`;
+  }
+  return symbol;
+}
+
+export async function getHistoricalDailyPrices(
+  symbol: string,
+  type: string,
+  startDate: string,
+  endDate: string
+): Promise<Array<{ date: string; price: number }>> {
+  try {
+    if (type === 'crypto') {
+      return await fetchCoinGeckoDailyHistory(symbol, startDate, endDate);
+    }
+    if (type === 'stock_us' || type === 'stock_cn' || type === 'gold') {
+      const ticker = getYahooTicker(symbol, type);
+      return await fetchYahooDailyHistory(ticker, startDate, endDate);
+    }
+  } catch (error) {
+    console.error(`Failed to fetch historical prices for ${symbol} (${type}):`, error);
+  }
+  return [];
+}
+
 // Unified price fetcher
 export async function getAssetPrice(symbol: string, type: string): Promise<number | null> {
   switch (type) {
