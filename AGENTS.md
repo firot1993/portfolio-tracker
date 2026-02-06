@@ -20,6 +20,7 @@ The application provides a unified dashboard with real-time price fetching, P&L 
 |-------|------------|
 | Frontend | React 19 + TypeScript + Vite |
 | Backend | Node.js + Express + TypeScript |
+| Collector | Node.js + TypeScript (separate process) |
 | Database | SQLite (via sql.js) |
 | Charts | Recharts |
 | Icons | Lucide React |
@@ -32,6 +33,9 @@ portfolio-tracker/
 ├── backend/
 │   ├── src/
 │   │   ├── index.ts              # Express app entry point
+│   │   ├── collector/            # Historical data collector
+│   │   │   ├── collector.ts      # Collector logic (daily + backfill)
+│   │   │   └── index.ts          # Collector entrypoint
 │   │   ├── routes/               # API route handlers
 │   │   │   ├── accounts.ts
 │   │   │   ├── assets.ts
@@ -106,6 +110,11 @@ npm run test:coverage
 # Database seeding (manual)
 npm run db:seed        # Seed default assets
 npm run db:seed:force  # Force seed (may create duplicates)
+
+# Historical data collector
+npm run collector -- daily
+npm run collector -- backfills
+npm run collector -- all
 ```
 
 **Backend runs on http://localhost:3001**
@@ -168,7 +177,7 @@ npm run e2e:ui  # Interactive UI mode
 | POST | /api/accounts | Create account |
 | GET | /api/history/portfolio?range=1M | Portfolio value history (1D, 1W, 1M, 3M, 6M, 1Y, YTD, ALL) |
 | GET | /api/history/asset/:id?range=1M | Asset price history |
-| POST | /api/history/snapshot | Manually trigger portfolio snapshot |
+| POST | /api/history/snapshot | Trigger collector run (daily snapshot + price history) |
 | GET | /api/history/range | Get available history date range |
 
 ## Code Style Guidelines
@@ -187,6 +196,7 @@ npm run e2e:ui  # Interactive UI mode
 - Database helper functions: `query<T>()`, `run()`, `lastInsertId()`
 - Always call `saveDB()` after write operations to persist to filesystem
 - Environment config loaded from `config/{NODE_ENV}.json`
+- Historical data is written by the collector; the API reads from `price_history` and `price_snapshots`
 
 ### Frontend Conventions
 
