@@ -115,9 +115,10 @@ export async function getAssetHistory(assetId: number, range: string): Promise<A
  * Record a price point for an asset
  */
 export function recordAssetPrice(assetId: number, price: number): void {
+  const timestamp = new Date().toISOString();
   run(
-    'INSERT INTO price_history (asset_id, price) VALUES (?, ?)',
-    [assetId, price]
+    'INSERT INTO price_history (asset_id, price, timestamp) VALUES (?, ?, ?)',
+    [assetId, price, timestamp]
   );
   saveDB();
 }

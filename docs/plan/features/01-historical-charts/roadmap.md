@@ -11,6 +11,7 @@
 ## Overview
 
 Add time-series charts showing portfolio value history and individual asset performance over time.
+Historical data collection is handled by a dedicated collector service (decoupled from the API backend).
 
 ---
 
@@ -77,6 +78,31 @@ CREATE TABLE IF NOT EXISTS price_snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_price_snapshots_date 
 ON price_snapshots(snapshot_date);
+
+-- Collector run audit (idempotent runs)
+CREATE TABLE IF NOT EXISTS collector_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_type TEXT NOT NULL, -- 'daily', 'hourly', 'backfill'
+  run_key TEXT NOT NULL, -- e.g. '2026-02-06' or '2026-02-06T10'
+  status TEXT NOT NULL, -- 'success', 'failed', 'partial'
+  started_at DATETIME NOT NULL,
+  finished_at DATETIME,
+  error_message TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_collector_runs_key
+ON collector_runs(run_type, run_key);
+
+-- Optional backfill jobs when users add a new asset
+CREATE TABLE IF NOT EXISTS backfill_jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  asset_id INTEGER NOT NULL REFERENCES assets(id),
+  range TEXT NOT NULL, -- '1Y', '3Y', '5Y', 'ALL'
+  status TEXT NOT NULL, -- 'queued', 'running', 'success', 'partial', 'failed'
+  requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  completed_at DATETIME,
+  error_message TEXT
+);
 ```
 
 ### Backend API
@@ -110,9 +136,9 @@ ON price_snapshots(snapshot_date);
 // Manually trigger a portfolio snapshot
 ```
 
-#### Services
+#### Services (API Backend)
 
-**Price History Service** (`backend/src/services/priceHistoryService.ts`)
+**History Service** (`backend/src/services/priceHistoryService.ts`)
 
 ```typescript
 export async function recordDailySnapshot(): Promise<void>
@@ -120,13 +146,16 @@ export async function getPortfolioHistory(range: string): Promise<HistoryPoint[]
 export async function getAssetHistory(assetId: number, range: string): Promise<AssetHistoryPoint[]>
 ```
 
-**Scheduled Job**
+**Collector Service (Decoupled)**
 
 ```typescript
-// Record snapshot at market close (4 PM EST) on weekdays
-const snapshotJob = new CronJob('0 16 * * 1-5', async () => {
-  await recordDailySnapshot();
-});
+// Runs in a separate process/service
+// 1) Determine assets to fetch (holdings + optional watchlist)
+// 2) Fetch daily close prices
+// 3) Write price_history and price_snapshots
+// 4) Record collector_runs for idempotency
+export async function runDailyCollector(): Promise<void>;
+export async function runBackfill(assetId: number, range: string): Promise<void>;
 ```
 
 ### Frontend Components
@@ -203,6 +232,23 @@ export const getAssetHistory = (assetId: number, range: string) =>
 - [x] Add export chart button (basic implementation)
 - [x] Responsive design for mobile
 - [ ] Write E2E tests
+
+---
+
+## Data Collection Design (Summary)
+
+### Asset Scope
+- Track only assets in holdings (and optional watchlist/benchmarks).
+- Do not attempt to maintain a full asset universe.
+
+### Daily Backfill
+- Backfill uses daily close (one record per day).
+- Triggered when a user adds a new asset or imports transactions.
+- Default range: 1Y (configurable). Longer ranges are optional.
+
+### Idempotency
+- Unique indexes on `(asset_id, timestamp)` for price history and `(snapshot_date)` for snapshots.
+- `collector_runs` prevents duplicate daily runs.
 
 ---
 

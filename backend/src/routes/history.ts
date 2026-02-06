@@ -2,13 +2,25 @@ import { Router } from 'express';
 import { query, run, saveDB } from '../db/index.js';
 import { 
   getPortfolioHistory, 
-  getAssetHistory, 
-  recordDailySnapshot,
+  getAssetHistory,
   recordAssetPrice,
   getAvailableHistoryRange
 } from '../services/priceHistoryService.js';
+import { runDailyCollector, getCollectorStats } from '../collector/collector.js';
 
 const router = Router();
+
+// Standard API response wrapper
+interface ApiResponse<T> {
+  success: boolean;
+  data?: T;
+  error?: string;
+  meta?: {
+    count?: number;
+    timestamp?: string;
+    range?: string;
+  };
+}
 
 // Get portfolio history
 // Query params:
@@ -19,19 +31,33 @@ router.get('/portfolio', async (req, res) => {
     const validRanges = ['1D', '1W', '1M', '3M', '6M', '1Y', 'YTD', 'ALL'];
     
     if (!validRanges.includes(range)) {
-      return res.status(400).json({ error: 'Invalid range. Must be one of: ' + validRanges.join(', ') });
+      const response: ApiResponse<never> = {
+        success: false,
+        error: 'Invalid range. Must be one of: ' + validRanges.join(', ')
+      };
+      return res.status(400).json(response);
     }
 
     const data = await getPortfolioHistory(range);
     
-    res.json({
-      range,
+    const response: ApiResponse<typeof data> = {
+      success: true,
       data,
-      count: data.length
-    });
+      meta: {
+        range,
+        count: data.length,
+        timestamp: new Date().toISOString()
+      }
+    };
+    
+    res.json(response);
   } catch (error: any) {
     console.error('Error fetching portfolio history:', error);
-    res.status(500).json({ error: 'Failed to fetch portfolio history' });
+    const response: ApiResponse<never> = {
+      success: false,
+      error: 'Failed to fetch portfolio history'
+    };
+    res.status(500).json(response);
   }
 });
 
@@ -44,44 +70,92 @@ router.get('/asset/:id', async (req, res) => {
     const range = (req.query.range as string) || '1M';
     
     if (isNaN(assetId)) {
-      return res.status(400).json({ error: 'Invalid asset ID' });
+      const response: ApiResponse<never> = {
+        success: false,
+        error: 'Invalid asset ID'
+      };
+      return res.status(400).json(response);
     }
 
     const validRanges = ['1D', '1W', '1M', '3M', '6M', '1Y', 'YTD', 'ALL'];
     if (!validRanges.includes(range)) {
-      return res.status(400).json({ error: 'Invalid range' });
+      const response: ApiResponse<never> = {
+        success: false,
+        error: 'Invalid range'
+      };
+      return res.status(400).json(response);
     }
 
     // Get asset info
     const asset = query('SELECT id, symbol, name FROM assets WHERE id = ?', [assetId])[0];
     if (!asset) {
-      return res.status(404).json({ error: 'Asset not found' });
+      const response: ApiResponse<never> = {
+        success: false,
+        error: 'Asset not found'
+      };
+      return res.status(404).json(response);
     }
 
     const data = await getAssetHistory(assetId, range);
     
-    res.json({
-      assetId: assetId.toString(),
-      symbol: (asset as any).symbol,
-      name: (asset as any).name,
-      range,
+    const response: ApiResponse<typeof data> = {
+      success: true,
       data,
-      count: data.length
-    });
+      meta: {
+        range,
+        count: data.length,
+        timestamp: new Date().toISOString()
+      }
+    };
+    
+    res.json(response);
   } catch (error: any) {
     console.error('Error fetching asset history:', error);
-    res.status(500).json({ error: 'Failed to fetch asset history' });
+    const response: ApiResponse<never> = {
+      success: false,
+      error: 'Failed to fetch asset history'
+    };
+    res.status(500).json(response);
   }
 });
 
 // Manually trigger a portfolio snapshot
 router.post('/snapshot', async (req, res) => {
   try {
-    await recordDailySnapshot();
-    res.json({ message: 'Portfolio snapshot recorded successfully' });
+    await runDailyCollector();
+    const response: ApiResponse<{ message: string }> = {
+      success: true,
+      data: { message: 'Collector run completed' },
+      meta: { timestamp: new Date().toISOString() }
+    };
+    res.json(response);
   } catch (error: any) {
-    console.error('Error recording snapshot:', error);
-    res.status(500).json({ error: 'Failed to record snapshot' });
+    console.error('Error running collector:', error);
+    const response: ApiResponse<never> = {
+      success: false,
+      error: 'Failed to run collector'
+    };
+    res.status(500).json(response);
+  }
+});
+
+// Get collector statistics
+router.get('/stats', (req, res) => {
+  try {
+    const stats = getCollectorStats();
+    const response: ApiResponse<typeof stats> = {
+      success: true,
+      data: stats,
+      meta: { timestamp: new Date().toISOString() }
+    };
+    res.json(response);
+  } catch (error: any) {
+    console.error('Error fetching collector stats:', error);
+    const response: ApiResponse<never> = {
+      success: false,
+      error: 'Failed to fetch collector statistics'
+    };
+    res.status(500).json(response);
   }
 });
 
@@ -92,30 +166,51 @@ router.post('/asset/:id/price', (req, res) => {
     const { price } = req.body;
     
     if (isNaN(assetId)) {
-      return res.status(400).json({ error: 'Invalid asset ID' });
+      const response: ApiResponse<never> = {
+        success: false,
+        error: 'Invalid asset ID'
+      };
+      return res.status(400).json(response);
     }
     
     if (typeof price !== 'number' || price <= 0) {
-      return res.status(400).json({ error: 'Invalid price' });
+      const response: ApiResponse<never> = {
+        success: false,
+        error: 'Invalid price'
+      };
+      return res.status(400).json(response);
     }
 
     // Verify asset exists
     const asset = query('SELECT id FROM assets WHERE id = ?', [assetId])[0];
     if (!asset) {
-      return res.status(404).json({ error: 'Asset not found' });
+      const response: ApiResponse<never> = {
+        success: false,
+        error: 'Asset not found'
+      };
+      return res.status(404).json(response);
     }
 
     recordAssetPrice(assetId, price);
     
-    res.status(201).json({
-      message: 'Price recorded successfully',
-      assetId,
-      price,
-      timestamp: new Date().toISOString()
-    });
+    const response: ApiResponse<{ assetId: number; price: number; timestamp: string }> = {
+      success: true,
+      data: {
+        assetId,
+        price,
+        timestamp: new Date().toISOString()
+      },
+      meta: { timestamp: new Date().toISOString() }
+    };
+    
+    res.status(201).json(response);
   } catch (error: any) {
     console.error('Error recording price:', error);
-    res.status(500).json({ error: 'Failed to record price' });
+    const response: ApiResponse<never> = {
+      success: false,
+      error: 'Failed to record price'
+    };
+    res.status(500).json(response);
   }
 });
 
@@ -123,10 +218,19 @@ router.post('/asset/:id/price', (req, res) => {
 router.get('/range', (req, res) => {
   try {
     const range = getAvailableHistoryRange();
-    res.json(range);
+    const response: ApiResponse<typeof range> = {
+      success: true,
+      data: range,
+      meta: { timestamp: new Date().toISOString() }
+    };
+    res.json(response);
   } catch (error: any) {
     console.error('Error fetching history range:', error);
-    res.status(500).json({ error: 'Failed to fetch history range' });
+    const response: ApiResponse<never> = {
+      success: false,
+      error: 'Failed to fetch history range'
+    };
+    res.status(500).json(response);
   }
 });
 
@@ -136,7 +240,11 @@ router.post('/prices/batch', (req, res) => {
     const { prices } = req.body; // Array of { asset_id, price }
     
     if (!Array.isArray(prices) || prices.length === 0) {
-      return res.status(400).json({ error: 'Prices array required' });
+      const response: ApiResponse<never> = {
+        success: false,
+        error: 'Prices array required'
+      };
+      return res.status(400).json(response);
     }
 
     let recorded = 0;
@@ -147,14 +255,23 @@ router.post('/prices/batch', (req, res) => {
       }
     }
     
-    res.json({
-      message: 'Prices recorded successfully',
-      recorded,
-      total: prices.length
-    });
+    const response: ApiResponse<{ recorded: number; total: number }> = {
+      success: true,
+      data: {
+        recorded,
+        total: prices.length
+      },
+      meta: { timestamp: new Date().toISOString() }
+    };
+    
+    res.json(response);
   } catch (error: any) {
     console.error('Error recording batch prices:', error);
-    res.status(500).json({ error: 'Failed to record prices' });
+    const response: ApiResponse<never> = {
+      success: false,
+      error: 'Failed to record prices'
+    };
+    res.status(500).json(response);
   }
 });
 

@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { query, run, saveDB } from '../db/index.js';
 import { getAssetPrice, getUSDCNYRate } from '../services/priceService.js';
-import { recordAssetPrice, recordDailySnapshot } from '../services/priceHistoryService.js';
 
 const router = Router();
 
@@ -47,8 +46,6 @@ router.get('/summary', async (req, res) => {
               'UPDATE assets SET current_price = ?, price_updated_at = datetime("now") WHERE id = ?',
               [currentPrice, h.asset_id]
             );
-            // Record price for history tracking
-            recordAssetPrice(h.asset_id, currentPrice);
           }
         } else {
           // Use cached price from database
@@ -141,8 +138,6 @@ router.post('/refresh-prices', async (req, res) => {
           'UPDATE assets SET current_price = ?, price_updated_at = datetime("now") WHERE id = ?',
           [price, h.asset_id]
         );
-        // Record price for history tracking
-        recordAssetPrice(h.asset_id, price);
       }
       results.push({ symbol: h.symbol, price });
     } catch (error: any) {
@@ -151,9 +146,6 @@ router.post('/refresh-prices', async (req, res) => {
   }
   
   saveDB();
-  
-  // Also record a portfolio snapshot after price refresh
-  await recordDailySnapshot();
   
   res.json({
     updated: results.filter(r => r.price !== null).length,

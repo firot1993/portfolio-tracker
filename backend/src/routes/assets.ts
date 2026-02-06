@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { query, run, lastInsertId, saveDB } from '../db/index.js';
+import { query, run, lastInsertId, saveDB, withTransaction } from '../db/index.js';
 import { getAssetPrice } from '../services/priceService.js';
 import { defaultAssets } from '../db/seeds.js';
 
@@ -27,28 +27,38 @@ router.get('/', async (req, res) => {
 });
 
 // Add new asset
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   const { symbol, name, type, exchange, currency = 'USD' } = req.body;
   
   if (!symbol || !name || !type) {
-    return res.status(400).json({ error: 'Symbol, name, and type are required' });
+    return res.status(400).json({ success: false, error: 'Symbol, name, and type are required' });
   }
   
   try {
-    run(
-      'INSERT INTO assets (symbol, name, type, exchange, currency) VALUES (?, ?, ?, ?, ?)',
-      [symbol.toUpperCase(), name, type, exchange || null, currency]
-    );
-    saveDB();
+    await withTransaction(() => {
+      run(
+        'INSERT INTO assets (symbol, name, type, exchange, currency) VALUES (?, ?, ?, ?, ?)',
+        [symbol.toUpperCase(), name, type, exchange || null, currency]
+      );
+      
+      const id = lastInsertId();
+      run(
+        'INSERT INTO backfill_jobs (asset_id, range, status) VALUES (?, ?, ?)',
+        [id, '1Y', 'queued']
+      );
+      saveDB();
+      return id;
+    });
     
     const id = lastInsertId();
     const asset = query('SELECT * FROM assets WHERE id = ?', [id])[0];
-    res.status(201).json(asset);
+    res.status(201).json({ success: true, data: asset });
   } catch (error: any) {
     if (error.message?.includes('UNIQUE')) {
-      return res.status(409).json({ error: 'Asset already exists' });
+      return res.status(409).json({ success: false, error: 'Asset already exists' });
     }
-    throw error;
+    console.error('Error creating asset:', error);
+    res.status(500).json({ success: false, error: 'Failed to create asset' });
   }
 });
 

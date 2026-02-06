@@ -122,9 +122,49 @@ export async function initDB(inMemory = false): Promise<SqlJsDatabase> {
     )
   `);
 
+  // Historical Performance Charts: Collector run audit
+  db.run(`
+    CREATE TABLE IF NOT EXISTS collector_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_type TEXT NOT NULL,
+      run_key TEXT NOT NULL,
+      status TEXT NOT NULL,
+      started_at DATETIME NOT NULL,
+      finished_at DATETIME,
+      error_message TEXT
+    )
+  `);
+
+  // Historical Performance Charts: Backfill job queue
+  db.run(`
+    CREATE TABLE IF NOT EXISTS backfill_jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      asset_id INTEGER NOT NULL REFERENCES assets(id),
+      range TEXT NOT NULL,
+      status TEXT NOT NULL,
+      requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      completed_at DATETIME,
+      error_message TEXT
+    )
+  `);
+
   // Historical Performance Charts: Add indexes for better query performance
   db.run(`CREATE INDEX IF NOT EXISTS idx_price_history_asset_date ON price_history(asset_id, timestamp)`);
+  try {
+    db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_price_history_unique ON price_history(asset_id, timestamp)`);
+  } catch {
+    // Existing duplicates may prevent unique index creation; keep non-unique index.
+  }
   db.run(`CREATE INDEX IF NOT EXISTS idx_price_snapshots_date ON price_snapshots(snapshot_date)`);
+  db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_collector_runs_key ON collector_runs(run_type, run_key)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_backfill_jobs_status ON backfill_jobs(status)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_backfill_jobs_asset ON backfill_jobs(asset_id)`);
+  // Prevent duplicate queued backfill jobs for same asset and range
+  try {
+    db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_backfill_jobs_unique ON backfill_jobs(asset_id, range) WHERE status = 'queued'`);
+  } catch {
+    // Index may already exist or DB doesn't support partial indexes
+  }
   db.run(`CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date)`);
 
   saveDB();
@@ -167,4 +207,30 @@ export function run(sql: string, params: any[] = []): number {
 export function lastInsertId(): number {
   const result = db.exec('SELECT last_insert_rowid() as id');
   return result[0]?.values[0]?.[0] as number || 0;
+}
+
+// Transaction support
+export function beginTransaction(): void {
+  db.run('BEGIN TRANSACTION');
+}
+
+export function commitTransaction(): void {
+  db.run('COMMIT');
+}
+
+export function rollbackTransaction(): void {
+  db.run('ROLLBACK');
+}
+
+// Execute function within a transaction
+export async function withTransaction<T>(fn: () => T): Promise<T> {
+  beginTransaction();
+  try {
+    const result = await fn();
+    commitTransaction();
+    return result;
+  } catch (error) {
+    rollbackTransaction();
+    throw error;
+  }
 }
