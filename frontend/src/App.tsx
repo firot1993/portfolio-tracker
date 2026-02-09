@@ -1,17 +1,18 @@
-import { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import { 
   TrendingUp, Plus, RefreshCw, Trash2, 
   LayoutDashboard, List, History, Search,
   X, ChevronDown, Wallet, DollarSign, AlertCircle,
   CheckCircle, Loader2, ArrowUpRight, ArrowDownRight,
-  Menu, Bell
+  Menu, Bell, Wifi, WifiOff
 } from 'lucide-react';
 import { 
   getPortfolioSummary, getTransactions, createAsset, 
   createTransaction, deleteTransaction, createHolding, 
-  getAssets, deleteAsset, seedDefaultAssets, refreshPrices
+  getAssets, deleteAsset, seedDefaultAssets, runBackfills
 } from './services/api';
+import { useRealtimePrices } from './hooks/useRealtimePrices';
 import './App.css';
 import PerformanceChart from './components/PerformanceChart';
 import AssetChartModal from './components/AssetChartModal';
@@ -76,6 +77,247 @@ interface Holding {
   pnl: number;
   pnlPercent: number;
 }
+
+// Dashboard Content Component - extracted to prevent re-renders
+interface DashboardContentProps {
+  loading: boolean;
+  summary: PortfolioSummary | null;
+  dashboardData: {
+    pieData: { name: string; value: number; color: string }[];
+    topHoldings: Holding[];
+    recentTransactions: Transaction[];
+    hasHoldings: boolean;
+    hasTransactions: boolean;
+  };
+  transactions: Transaction[];
+  wsConnected: boolean;
+  getRealtimePrice: (symbol: string) => number | null;
+  setActiveTab: (tab: string) => void;
+  setShowAddHolding: (show: boolean) => void;
+  setShowAddTx: (show: boolean) => void;
+}
+
+const DashboardContent = React.memo(function DashboardContent({
+  loading,
+  summary,
+  dashboardData,
+  transactions,
+  wsConnected,
+  getRealtimePrice,
+  setActiveTab,
+  setShowAddHolding,
+  setShowAddTx,
+}: DashboardContentProps) {
+  return (
+    <>
+      {/* Stats Cards */}
+      <div className="stats-grid">
+        {loading ? (
+          <>
+            <SkeletonCard />
+            <SkeletonCard />
+            <SkeletonCard />
+            <SkeletonCard />
+          </>
+        ) : (
+          <>
+            <StatCard
+              title="Total Value"
+              value={formatCurrency(summary?.totalValueUSD || 0)}
+              subtitle={`USD/CNY: ${summary?.usdcny?.toFixed(4) || '-'}`}
+              icon={DollarSign}
+            />
+            <StatCard
+              title="Total P&L"
+              value={formatCurrency(summary?.totalPnL || 0)}
+              subtitle={formatPercent(summary?.totalPnLPercent || 0)}
+              icon={TrendingUp}
+              trend={`${Math.abs(summary?.totalPnLPercent || 0).toFixed(2)}%`}
+              positive={(summary?.totalPnL || 0) >= 0}
+            />
+            <StatCard
+              title="Holdings"
+              value={summary?.holdings?.length?.toString() || '0'}
+              subtitle="Active positions"
+              icon={Wallet}
+            />
+            <StatCard
+              title="Transactions"
+              value={transactions.length.toString()}
+              subtitle="Total records"
+              icon={History}
+            />
+          </>
+        )}
+      </div>
+
+      {/* Performance Chart */}
+      <div className="dashboard-full-width">
+        <PerformanceChart />
+      </div>
+
+      {/* Main Content */}
+      <div className="dashboard-grid">
+        {/* Allocation Chart */}
+        <div className="dashboard-card">
+          <div className="card-header">
+            <h3>Asset Allocation</h3>
+          </div>
+          <div className="card-body">
+            {loading ? (
+              <div className="chart-skeleton" />
+            ) : dashboardData.pieData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={280}>
+                <PieChart>
+                  <Pie
+                    data={dashboardData.pieData}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={70}
+                    outerRadius={100}
+                    dataKey="value"
+                    paddingAngle={2}
+                  >
+                    {dashboardData.pieData.map((entry, index) => (
+                      <Cell key={index} fill={entry.color} />
+                    ))}
+                  </Pie>
+                  <Tooltip 
+                    formatter={(v) => `${v}%`}
+                    contentStyle={{ 
+                      background: '#1a1a1a', 
+                      border: '1px solid #333',
+                      borderRadius: '8px'
+                    }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            ) : (
+              <EmptyState
+                icon={PieChart}
+                title="No Allocation Data"
+                description="Add holdings to see your portfolio allocation"
+              />
+            )}
+          </div>
+        </div>
+
+        {/* Holdings Preview */}
+        <div className="dashboard-card">
+          <div className="card-header">
+            <h3>Top Holdings</h3>
+            <button 
+              className="btn-text"
+              onClick={() => setActiveTab('holdings')}
+            >
+              View All
+            </button>
+          </div>
+          <div className="card-body">
+            {loading ? (
+              <SkeletonTable rows={3} />
+            ) : dashboardData.hasHoldings ? (
+              <div className="holdings-list">
+                {dashboardData.topHoldings.map((h: Holding) => {
+                  const realtimePrice = getRealtimePrice(h.symbol);
+                  const hasRealtimePrice = realtimePrice !== null && wsConnected;
+                  
+                  return (
+                    <div key={h.symbol} className={`holding-item ${hasRealtimePrice ? 'realtime-active' : ''}`}>
+                      <div className="holding-info">
+                        <span className={`type-badge ${h.type}`}>{h.symbol}</span>
+                        <span className="holding-name">{h.name}</span>
+                      </div>
+                      <div className="holding-value">
+                        <div className="holding-amount">{formatCurrency(h.valueUSD)}</div>
+                        <div className={`holding-pnl ${h.pnl >= 0 ? 'positive' : 'negative'}`}>
+                          {formatPercent(h.pnlPercent)}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <EmptyState
+                icon={Wallet}
+                title="No Holdings"
+                description="Add your first holding to get started"
+                action={
+                  <button onClick={() => setShowAddHolding(true)}>
+                    <Plus size={16} /> Add Holding
+                  </button>
+                }
+              />
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Recent Transactions */}
+      <div className="dashboard-card full-width">
+        <div className="card-header">
+          <h3>Recent Transactions</h3>
+          <button 
+            className="btn-text"
+            onClick={() => setActiveTab('transactions')}
+          >
+            View All
+          </button>
+        </div>
+        <div className="card-body">
+          {loading ? (
+            <SkeletonTable rows={5} />
+          ) : dashboardData.hasTransactions ? (
+            <div className="transactions-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Asset</th>
+                    <th>Type</th>
+                    <th>Qty</th>
+                    <th>Price</th>
+                    <th>Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dashboardData.recentTransactions.map((tx) => (
+                    <tr key={tx.id}>
+                      <td>{new Date(tx.date).toLocaleDateString()}</td>
+                      <td>
+                        <span className="tx-asset">{tx.asset_symbol}</span>
+                      </td>
+                      <td>
+                        <span className={`tx-badge ${tx.type}`}>
+                          {tx.type?.toUpperCase()}
+                        </span>
+                      </td>
+                      <td>{tx.quantity}</td>
+                      <td>{formatCurrency(tx.price)}</td>
+                      <td className="tx-total">{formatCurrency(tx.quantity * tx.price)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <EmptyState
+              icon={History}
+              title="No Transactions"
+              description="Record your first buy or sell transaction"
+              action={
+                <button onClick={() => setShowAddTx(true)}>
+                  <Plus size={16} /> Add Transaction
+                </button>
+              }
+            />
+          )}
+        </div>
+      </div>
+    </>
+  );
+});
 
 // Portfolio Summary type
 interface PortfolioSummary {
@@ -408,8 +650,35 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [priceRefreshing, setPriceRefreshing] = useState(false);
+  const [backfillRunning, setBackfillRunning] = useState(false);
   const [stalePrices, setStalePrices] = useState(false);
   const { toasts, showToast, removeToast } = useToast();
+  
+  // Realtime prices and connection status
+  const { prices: realtimePrices, connected: wsConnected, stats: wsStats } = useRealtimePrices();
+  
+  // Use API-fetched holdings - refreshed every 10 minutes
+  const holdingsList = useMemo(() => {
+    return summary?.holdings || [];
+  }, [summary?.holdings]);
+  
+  // Auto-refresh holdings list every 10 minutes
+  useEffect(() => {
+    const interval = setInterval(() => {
+      console.log('[App] Auto-refreshing holdings list (10 min interval)');
+      loadData(true); // silent refresh
+    }, 10 * 60 * 1000); // 10 minutes
+    
+    return () => clearInterval(interval);
+  }, []); // Empty deps - interval runs continuously
+  
+  // Helper to get realtime price for a holding
+  const getRealtimePrice = useCallback((symbol: string): number | null => {
+    const asset = assets.find(a => a.symbol === symbol);
+    if (!asset) return null;
+    const price = realtimePrices.get(asset.id);
+    return price?.price ?? null;
+  }, [realtimePrices, assets]);
 
   // Modals state
   const [showAddAsset, setShowAddAsset] = useState(false);
@@ -437,10 +706,7 @@ function App() {
       setAssets(assetsData);
       setStalePrices(summaryData.stalePrices || false);
       
-      // If prices are stale and we're not explicitly refreshing, trigger background refresh
-      if (summaryData.stalePrices && !refreshPriceData && !silent) {
-        refreshPriceDataInBackground();
-      }
+      // Note: Realtime prices are handled via WebSocket, no need for polling
     } catch {
       showToast('Failed to load data. Is the backend running?', 'error');
     } finally {
@@ -449,31 +715,16 @@ function App() {
     }
   };
   
-  // Background price refresh
-  const refreshPriceDataInBackground = async () => {
-    setPriceRefreshing(true);
-    try {
-      await refreshPrices();
-      // Reload data with fresh prices (silent)
-      const summaryData = await getPortfolioSummary({ includePrices: true });
-      setSummary(summaryData);
-      setStalePrices(false);
-    } catch {
-      // Silent fail - data is already displayed with cached prices
-      console.log('Background price refresh failed');
-    } finally {
-      setPriceRefreshing(false);
-    }
-  };
-  
-  // Manual price refresh
+  // Manual refresh from API (fallback when WebSocket is not available)
   const handleRefreshPrices = async () => {
+    if (wsConnected) {
+      showToast('Realtime prices active via WebSocket', 'info');
+      return;
+    }
     setPriceRefreshing(true);
     try {
-      const result = await refreshPrices();
-      // Reload data with fresh prices
-      await loadData(true, false);
-      showToast(`Prices updated: ${result.updated} assets refreshed`, 'success');
+      await loadData(true, true);
+      showToast('Prices refreshed from API', 'success');
     } catch {
       showToast('Failed to refresh prices', 'error');
     } finally {
@@ -483,15 +734,6 @@ function App() {
 
   useEffect(() => {
     loadData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Auto refresh every 60 seconds (background only, don't block UI)
-  useEffect(() => {
-    const interval = setInterval(() => {
-      refreshPriceDataInBackground();
-    }, 60000);
-    return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -511,221 +753,46 @@ function App() {
     }
   };
 
-  const pieData = summary
-    ? (Object.entries(summary.allocationPercent || {}) as [string, number][])
-        .filter(([, v]) => v > 0)
-        .map(([type, value]) => ({
-          name: TYPE_LABELS[type] || type,
-          value: parseFloat(value.toFixed(2)),
-          color: COLORS[type],
-        }))
-    : [];
+  const handleRunBackfills = async () => {
+    setBackfillRunning(true);
+    try {
+      const result = await runBackfills();
+      const stats = result.data?.stats;
+      if (stats) {
+        showToast(
+          `Backfill complete. Pending: ${stats.pendingJobs}, Completed: ${stats.completedJobs}`,
+          'success'
+        );
+      } else {
+        showToast('Backfill complete', 'success');
+      }
+    } catch {
+      showToast('Failed to run backfills', 'error');
+    } finally {
+      setBackfillRunning(false);
+    }
+  };
 
-  // Dashboard View
-  const DashboardView = () => (
-    <>
-      {/* Stats Cards */}
-      <div className="stats-grid">
-        {loading ? (
-          <>
-            <SkeletonCard />
-            <SkeletonCard />
-            <SkeletonCard />
-            <SkeletonCard />
-          </>
-        ) : (
-          <>
-            <StatCard
-              title="Total Value"
-              value={formatCurrency(summary?.totalValueUSD || 0)}
-              subtitle={`USD/CNY: ${summary?.usdcny?.toFixed(4) || '-'}`}
-              icon={DollarSign}
-            />
-            <StatCard
-              title="Total P&L"
-              value={formatCurrency(summary?.totalPnL || 0)}
-              subtitle={formatPercent(summary?.totalPnLPercent || 0)}
-              icon={TrendingUp}
-              trend={`${Math.abs(summary?.totalPnLPercent || 0).toFixed(2)}%`}
-              positive={(summary?.totalPnL || 0) >= 0}
-            />
-            <StatCard
-              title="Holdings"
-              value={summary?.holdings?.length?.toString() || '0'}
-              subtitle="Active positions"
-              icon={Wallet}
-            />
-            <StatCard
-              title="Transactions"
-              value={transactions.length.toString()}
-              subtitle="Total records"
-              icon={History}
-            />
-          </>
-        )}
-      </div>
+  const pieData = useMemo(() => {
+    return summary
+      ? (Object.entries(summary.allocationPercent || {}) as [string, number][])
+          .filter(([, v]) => v > 0)
+          .map(([type, value]) => ({
+            name: TYPE_LABELS[type] || type,
+            value: parseFloat(value.toFixed(2)),
+            color: COLORS[type],
+          }))
+      : [];
+  }, [summary?.allocationPercent]); // Only recalculate when allocation changes
 
-      {/* Performance Chart */}
-      <div className="dashboard-full-width">
-        <PerformanceChart />
-      </div>
-
-      {/* Main Content */}
-      <div className="dashboard-grid">
-        {/* Allocation Chart */}
-        <div className="dashboard-card">
-          <div className="card-header">
-            <h3>Asset Allocation</h3>
-          </div>
-          <div className="card-body">
-            {loading ? (
-              <div className="chart-skeleton" />
-            ) : pieData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={280}>
-                <PieChart>
-                  <Pie
-                    data={pieData}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={70}
-                    outerRadius={100}
-                    dataKey="value"
-                    paddingAngle={2}
-                  >
-                    {pieData.map((entry, index) => (
-                      <Cell key={index} fill={entry.color} />
-                    ))}
-                  </Pie>
-                  <Tooltip 
-                    formatter={(v) => `${v}%`}
-                    contentStyle={{ 
-                      background: '#1a1a1a', 
-                      border: '1px solid #333',
-                      borderRadius: '8px'
-                    }}
-                  />
-                </PieChart>
-              </ResponsiveContainer>
-            ) : (
-              <EmptyState
-                icon={PieChart}
-                title="No Allocation Data"
-                description="Add holdings to see your portfolio allocation"
-              />
-            )}
-          </div>
-        </div>
-
-        {/* Holdings Preview */}
-        <div className="dashboard-card">
-          <div className="card-header">
-            <h3>Top Holdings</h3>
-            <button 
-              className="btn-text"
-              onClick={() => setActiveTab('holdings')}
-            >
-              View All
-            </button>
-          </div>
-          <div className="card-body">
-            {loading ? (
-              <SkeletonTable rows={3} />
-            ) : summary && summary.holdings && summary.holdings.length > 0 ? (
-              <div className="holdings-list">
-                {summary.holdings.slice(0, 5).map((h: Holding) => (
-                  <div key={h.symbol} className="holding-item">
-                    <div className="holding-info">
-                      <span className={`type-badge ${h.type}`}>{h.symbol}</span>
-                      <span className="holding-name">{h.name}</span>
-                    </div>
-                    <div className="holding-value">
-                      <div className="holding-amount">{formatCurrency(h.valueUSD)}</div>
-                      <div className={`holding-pnl ${h.pnl >= 0 ? 'positive' : 'negative'}`}>
-                        {formatPercent(h.pnlPercent)}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <EmptyState
-                icon={Wallet}
-                title="No Holdings"
-                description="Add your first holding to get started"
-                action={
-                  <button onClick={() => setShowAddHolding(true)}>
-                    <Plus size={16} /> Add Holding
-                  </button>
-                }
-              />
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Recent Transactions */}
-      <div className="dashboard-card full-width">
-        <div className="card-header">
-          <h3>Recent Transactions</h3>
-          <button 
-            className="btn-text"
-            onClick={() => setActiveTab('transactions')}
-          >
-            View All
-          </button>
-        </div>
-        <div className="card-body">
-          {loading ? (
-            <SkeletonTable rows={5} />
-          ) : transactions.length > 0 ? (
-            <div className="transactions-table">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Asset</th>
-                    <th>Type</th>
-                    <th>Qty</th>
-                    <th>Price</th>
-                    <th>Total</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {transactions.slice(0, 10).map((tx) => (
-                    <tr key={tx.id}>
-                      <td>{new Date(tx.date).toLocaleDateString()}</td>
-                      <td>
-                        <span className="tx-asset">{tx.asset_symbol}</span>
-                      </td>
-                      <td>
-                        <span className={`tx-badge ${tx.type}`}>
-                          {tx.type?.toUpperCase()}
-                        </span>
-                      </td>
-                      <td>{tx.quantity}</td>
-                      <td>{formatCurrency(tx.price)}</td>
-                      <td className="tx-total">{formatCurrency(tx.quantity * tx.price)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <EmptyState
-              icon={History}
-              title="No Transactions"
-              description="Record your first buy or sell transaction"
-              action={
-                <button onClick={() => setShowAddTx(true)}>
-                  <Plus size={16} /> Add Transaction
-                </button>
-              }
-            />
-          )}
-        </div>
-      </div>
-    </>
-  );
+  // Memoize dashboard data to prevent chart re-renders
+  const dashboardData = useMemo(() => ({
+    pieData,
+    topHoldings: holdingsList.slice(0, 5),
+    recentTransactions: transactions.slice(0, 10),
+    hasHoldings: holdingsList.length > 0,
+    hasTransactions: transactions.length > 0,
+  }), [pieData, holdingsList, transactions]);
 
   // Holdings View
   const HoldingsView = () => (
@@ -738,7 +805,7 @@ function App() {
       </div>
       {loading ? (
         <SkeletonTable rows={8} />
-      ) : summary && summary.holdings && summary.holdings.length > 0 ? (
+      ) : holdingsList.length > 0 ? (
         <div className="data-table">
           <table>
             <thead>
@@ -752,31 +819,39 @@ function App() {
               </tr>
             </thead>
             <tbody>
-              {summary.holdings.map((h: Holding) => (
-                <tr 
-                  key={h.symbol} 
-                  className="clickable-row"
-                  onClick={() => setSelectedAssetForChart(h)}
-                  title="Click to view price history"
-                >
-                  <td>
-                    <div className="asset-cell">
-                      <span className={`type-badge ${h.type}`}>{h.symbol}</span>
-                      <span className="asset-name">{h.name}</span>
-                    </div>
-                  </td>
-                  <td>{h.quantity?.toFixed(4)}</td>
-                  <td>{formatCurrency(h.avgCost)}</td>
-                  <td>{h.currentPrice ? formatCurrency(h.currentPrice) : '-'}</td>
-                  <td className="value-cell">{formatCurrency(h.valueUSD)}</td>
-                  <td className={h.pnl >= 0 ? 'positive' : 'negative'}>
-                    <div className="pnl-cell">
-                      {formatCurrency(h.pnl)}
-                      <small>({formatPercent(h.pnlPercent)})</small>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+              {holdingsList.map((h: Holding) => {
+                const realtimePrice = getRealtimePrice(h.symbol);
+                const displayPrice = realtimePrice ?? h.currentPrice;
+                const hasRealtimePrice = realtimePrice !== null && wsConnected;
+                
+                return (
+                  <tr 
+                    key={h.symbol} 
+                    className="clickable-row"
+                    onClick={() => setSelectedAssetForChart(h)}
+                    title="Click to view price history"
+                  >
+                    <td>
+                      <div className="asset-cell">
+                        <span className={`type-badge ${h.type}`}>{h.symbol}</span>
+                        <span className="asset-name">{h.name}</span>
+                      </div>
+                    </td>
+                    <td>{h.quantity?.toFixed(4)}</td>
+                    <td>{formatCurrency(h.avgCost)}</td>
+                    <td className={hasRealtimePrice ? 'realtime-price' : ''}>
+                      {displayPrice ? formatCurrency(displayPrice) : '-'}
+                    </td>
+                    <td className="value-cell">{formatCurrency(h.valueUSD)}</td>
+                    <td className={h.pnl >= 0 ? 'positive' : 'negative'}>
+                      <div className="pnl-cell">
+                        {formatCurrency(h.pnl)}
+                        <small>({formatPercent(h.pnlPercent)})</small>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -884,6 +959,14 @@ function App() {
           <button onClick={handleSeedAssets} className="btn-secondary">
             <RefreshCw size={16} /> Seed Defaults
           </button>
+          <button
+            onClick={handleRunBackfills}
+            className="btn-secondary"
+            disabled={backfillRunning}
+            title="Run queued backfill jobs"
+          >
+            <History size={16} className={backfillRunning ? 'spin' : ''} /> Backfill
+          </button>
           <button onClick={() => setShowAddAsset(true)}>
             <Plus size={16} /> Add Asset
           </button>
@@ -971,6 +1054,22 @@ function App() {
             <h1>{activeTab.charAt(0).toUpperCase() + activeTab.slice(1)}</h1>
           </div>
           <div className="header-right">
+            {/* WebSocket Connection Status */}
+            <div 
+              className={`ws-status ${wsConnected ? 'connected' : 'disconnected'}`}
+              title={wsConnected 
+                ? `Realtime: ${wsStats?.cryptoCount || 0} crypto, ${wsStats?.stockUsCount || 0} stocks` 
+                : 'Realtime disconnected'
+              }
+            >
+              {wsConnected ? <Wifi size={16} /> : <WifiOff size={16} />}
+              {wsConnected && (
+                <span className="ws-badge">
+                  {wsStats?.trackedAssets || 0}
+                </span>
+              )}
+            </div>
+            
             {stalePrices && !priceRefreshing && (
               <span className="price-stale-indicator" title="Prices may be outdated">
                 <AlertCircle size={16} />
@@ -980,9 +1079,9 @@ function App() {
               onClick={handleRefreshPrices} 
               className="btn-icon"
               disabled={priceRefreshing}
-              title="Refresh prices"
+              title={wsConnected ? 'Realtime active (WebSocket)' : 'Refresh prices from API'}
             >
-              <RefreshCw size={18} className={priceRefreshing ? 'spin' : ''} />
+              <RefreshCw size={18} className={priceRefreshing || wsConnected ? 'spin' : ''} />
             </button>
             <button 
               onClick={() => loadData(true)} 
@@ -1002,7 +1101,19 @@ function App() {
 
         {/* Content */}
         <div className="content">
-          {activeTab === 'dashboard' && <DashboardView />}
+          {activeTab === 'dashboard' && (
+            <DashboardContent 
+              loading={loading}
+              summary={summary}
+              dashboardData={dashboardData}
+              transactions={transactions}
+              wsConnected={wsConnected}
+              getRealtimePrice={getRealtimePrice}
+              setActiveTab={setActiveTab}
+              setShowAddHolding={setShowAddHolding}
+              setShowAddTx={setShowAddTx}
+            />
+          )}
           {activeTab === 'holdings' && <HoldingsView />}
           {activeTab === 'transactions' && <TransactionsView />}
           {activeTab === 'assets' && <AssetsView />}

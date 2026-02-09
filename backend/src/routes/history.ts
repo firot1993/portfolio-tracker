@@ -6,7 +6,7 @@ import {
   recordAssetPrice,
   getAvailableHistoryRange
 } from '../services/priceHistoryService.js';
-import { runDailyCollector, getCollectorStats } from '../collector/collector.js';
+import { runDailyCollector, runQueuedBackfills, getCollectorStats } from '../collector/collector.js';
 
 const router = Router();
 
@@ -134,6 +134,27 @@ router.post('/snapshot', async (req, res) => {
     const response: ApiResponse<never> = {
       success: false,
       error: 'Failed to run collector'
+    };
+    res.status(500).json(response);
+  }
+});
+
+// Run queued backfill jobs
+router.post('/backfill/run', async (req, res) => {
+  try {
+    await runQueuedBackfills();
+    const stats = getCollectorStats();
+    const response: ApiResponse<{ message: string; stats: typeof stats }> = {
+      success: true,
+      data: { message: 'Backfill processing completed', stats },
+      meta: { timestamp: new Date().toISOString() }
+    };
+    res.json(response);
+  } catch (error: any) {
+    console.error('Error running backfills:', error);
+    const response: ApiResponse<never> = {
+      success: false,
+      error: 'Failed to run backfills'
     };
     res.status(500).json(response);
   }

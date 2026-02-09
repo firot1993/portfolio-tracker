@@ -218,6 +218,67 @@ body {
   gap: var(--space-md);
 }
 
+/* WebSocket Status Indicator */
+.ws-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.ws-status.connected {
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--positive);
+}
+
+.ws-status.connected:hover {
+  background: rgba(34, 197, 94, 0.25);
+}
+
+.ws-status.disconnected {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--negative);
+}
+
+.ws-status.disconnected:hover {
+  background: rgba(239, 68, 68, 0.25);
+}
+
+.ws-badge {
+  background: var(--positive);
+  color: white;
+  font-size: 10px;
+  padding: 2px 5px;
+  border-radius: 10px;
+  min-width: 16px;
+  text-align: center;
+}
+
+.ws-status.disconnected .ws-badge {
+  background: var(--negative);
+}
+
+/* Realtime price highlight */
+.realtime-price {
+  color: var(--positive);
+  animation: priceFlash 0.5s ease;
+}
+
+@keyframes priceFlash {
+  0% { background: rgba(34, 197, 94, 0.3); }
+  100% { background: transparent; }
+}
+
+/* Holding item with realtime price */
+.holding-item.realtime-active {
+  border-left: 2px solid var(--positive);
+}
+
 /* Content Area */
 .content {
   flex: 1;

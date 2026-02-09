@@ -144,6 +144,9 @@ export const getAssetHistory = (assetId: number, range: string) =>
 export const recordSnapshot = () => 
   api.post('/history/snapshot').then(r => r.data);
 
+export const runBackfills = () =>
+  api.post<{ success: boolean; data?: { message: string; stats: { pendingJobs: number; completedJobs: number; totalRuns: number; successfulRuns: number; failedRuns: number } } }>('/history/backfill/run').then(r => r.data);
+
 export const getHistoryRange = () => 
   api.get<{ earliest: string | null; latest: string | null }>('/history/range').then(r => r.data);
 
