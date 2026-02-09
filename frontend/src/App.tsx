@@ -82,6 +82,11 @@ interface Holding {
 interface DashboardContentProps {
   loading: boolean;
   summary: PortfolioSummary | null;
+  realtimeTotals: {
+    totalValueUSD: number;
+    totalPnL: number;
+    totalPnLPercent: number;
+  };
   dashboardData: {
     pieData: { name: string; value: number; color: string }[];
     topHoldings: Holding[];
@@ -97,9 +102,64 @@ interface DashboardContentProps {
   setShowAddTx: (show: boolean) => void;
 }
 
+const AllocationCard = React.memo(function AllocationCard({
+  loading,
+  pieData,
+}: {
+  loading: boolean;
+  pieData: { name: string; value: number; color: string }[];
+}) {
+  return (
+    <div className="dashboard-card">
+      <div className="card-header">
+        <h3>Asset Allocation</h3>
+      </div>
+      <div className="card-body">
+        {loading ? (
+          <div className="chart-skeleton" />
+        ) : pieData.length > 0 ? (
+          <ResponsiveContainer width="100%" height={280}>
+            <PieChart>
+              <Pie
+                data={pieData}
+                cx="50%"
+                cy="50%"
+                innerRadius={70}
+                outerRadius={100}
+                dataKey="value"
+                paddingAngle={2}
+                isAnimationActive={false}
+              >
+                {pieData.map((entry) => (
+                  <Cell key={entry.name} fill={entry.color} />
+                ))}
+              </Pie>
+              <Tooltip 
+                formatter={(v) => `${v}%`}
+                contentStyle={{ 
+                  background: '#1a1a1a', 
+                  border: '1px solid #333',
+                  borderRadius: '8px'
+                }}
+              />
+            </PieChart>
+          </ResponsiveContainer>
+        ) : (
+          <EmptyState
+            icon={PieChart}
+            title="No Allocation Data"
+            description="Add holdings to see your portfolio allocation"
+          />
+        )}
+      </div>
+    </div>
+  );
+});
+
 const DashboardContent = React.memo(function DashboardContent({
   loading,
   summary,
+  realtimeTotals,
   dashboardData,
   transactions,
   wsConnected,
@@ -123,17 +183,17 @@ const DashboardContent = React.memo(function DashboardContent({
           <>
             <StatCard
               title="Total Value"
-              value={formatCurrency(summary?.totalValueUSD || 0)}
+              value={formatCurrency(realtimeTotals.totalValueUSD)}
               subtitle={`USD/CNY: ${summary?.usdcny?.toFixed(4) || '-'}`}
               icon={DollarSign}
             />
             <StatCard
               title="Total P&L"
-              value={formatCurrency(summary?.totalPnL || 0)}
-              subtitle={formatPercent(summary?.totalPnLPercent || 0)}
+              value={formatCurrency(realtimeTotals.totalPnL)}
+              subtitle={formatPercent(realtimeTotals.totalPnLPercent)}
               icon={TrendingUp}
-              trend={`${Math.abs(summary?.totalPnLPercent || 0).toFixed(2)}%`}
-              positive={(summary?.totalPnL || 0) >= 0}
+              trend={`${Math.abs(realtimeTotals.totalPnLPercent).toFixed(2)}%`}
+              positive={realtimeTotals.totalPnL >= 0}
             />
             <StatCard
               title="Holdings"
@@ -159,48 +219,7 @@ const DashboardContent = React.memo(function DashboardContent({
       {/* Main Content */}
       <div className="dashboard-grid">
         {/* Allocation Chart */}
-        <div className="dashboard-card">
-          <div className="card-header">
-            <h3>Asset Allocation</h3>
-          </div>
-          <div className="card-body">
-            {loading ? (
-              <div className="chart-skeleton" />
-            ) : dashboardData.pieData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={280}>
-                <PieChart>
-                  <Pie
-                    data={dashboardData.pieData}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={70}
-                    outerRadius={100}
-                    dataKey="value"
-                    paddingAngle={2}
-                  >
-                    {dashboardData.pieData.map((entry, index) => (
-                      <Cell key={index} fill={entry.color} />
-                    ))}
-                  </Pie>
-                  <Tooltip 
-                    formatter={(v) => `${v}%`}
-                    contentStyle={{ 
-                      background: '#1a1a1a', 
-                      border: '1px solid #333',
-                      borderRadius: '8px'
-                    }}
-                  />
-                </PieChart>
-              </ResponsiveContainer>
-            ) : (
-              <EmptyState
-                icon={PieChart}
-                title="No Allocation Data"
-                description="Add holdings to see your portfolio allocation"
-              />
-            )}
-          </div>
-        </div>
+        <AllocationCard loading={loading} pieData={dashboardData.pieData} />
 
         {/* Holdings Preview */}
         <div className="dashboard-card">
@@ -221,6 +240,10 @@ const DashboardContent = React.memo(function DashboardContent({
                 {dashboardData.topHoldings.map((h: Holding) => {
                   const realtimePrice = getRealtimePrice(h.symbol);
                   const hasRealtimePrice = realtimePrice !== null && wsConnected;
+                  const displayPrice = realtimePrice ?? h.currentPrice ?? 0;
+                  const displayValue = displayPrice * h.quantity;
+                  const displayPnl = displayValue - h.costUSD;
+                  const displayPnlPercent = h.costUSD > 0 ? (displayPnl / h.costUSD) * 100 : 0;
                   
                   return (
                     <div key={h.symbol} className={`holding-item ${hasRealtimePrice ? 'realtime-active' : ''}`}>
@@ -229,9 +252,9 @@ const DashboardContent = React.memo(function DashboardContent({
                         <span className="holding-name">{h.name}</span>
                       </div>
                       <div className="holding-value">
-                        <div className="holding-amount">{formatCurrency(h.valueUSD)}</div>
-                        <div className={`holding-pnl ${h.pnl >= 0 ? 'positive' : 'negative'}`}>
-                          {formatPercent(h.pnlPercent)}
+                        <div className="holding-amount">{formatCurrency(displayValue)}</div>
+                        <div className={`holding-pnl ${displayPnl >= 0 ? 'positive' : 'negative'}`}>
+                          {formatPercent(displayPnlPercent)}
                         </div>
                       </div>
                     </div>
@@ -680,6 +703,21 @@ function App() {
     return price?.price ?? null;
   }, [realtimePrices, assets]);
 
+  const realtimeTotals = useMemo(() => {
+    let totalValueUSD = 0;
+    let totalCostUSD = 0;
+    for (const h of holdingsList) {
+      const realtimePrice = getRealtimePrice(h.symbol);
+      const displayPrice = realtimePrice ?? h.currentPrice ?? 0;
+      const valueUSD = displayPrice * h.quantity;
+      totalValueUSD += valueUSD;
+      totalCostUSD += h.costUSD;
+    }
+    const totalPnL = totalValueUSD - totalCostUSD;
+    const totalPnLPercent = totalCostUSD > 0 ? (totalPnL / totalCostUSD) * 100 : 0;
+    return { totalValueUSD, totalPnL, totalPnLPercent };
+  }, [holdingsList, getRealtimePrice]);
+
   // Modals state
   const [showAddAsset, setShowAddAsset] = useState(false);
   const [showAddTx, setShowAddTx] = useState(false);
@@ -823,6 +861,9 @@ function App() {
                 const realtimePrice = getRealtimePrice(h.symbol);
                 const displayPrice = realtimePrice ?? h.currentPrice;
                 const hasRealtimePrice = realtimePrice !== null && wsConnected;
+                const displayValue = displayPrice ? displayPrice * h.quantity : 0;
+                const displayPnl = displayValue - h.costUSD;
+                const displayPnlPercent = h.costUSD > 0 ? (displayPnl / h.costUSD) * 100 : 0;
                 
                 return (
                   <tr 
@@ -842,11 +883,11 @@ function App() {
                     <td className={hasRealtimePrice ? 'realtime-price' : ''}>
                       {displayPrice ? formatCurrency(displayPrice) : '-'}
                     </td>
-                    <td className="value-cell">{formatCurrency(h.valueUSD)}</td>
-                    <td className={h.pnl >= 0 ? 'positive' : 'negative'}>
+                    <td className="value-cell">{formatCurrency(displayValue)}</td>
+                    <td className={displayPnl >= 0 ? 'positive' : 'negative'}>
                       <div className="pnl-cell">
-                        {formatCurrency(h.pnl)}
-                        <small>({formatPercent(h.pnlPercent)})</small>
+                        {formatCurrency(displayPnl)}
+                        <small>({formatPercent(displayPnlPercent)})</small>
                       </div>
                     </td>
                   </tr>
@@ -1105,6 +1146,7 @@ function App() {
             <DashboardContent 
               loading={loading}
               summary={summary}
+              realtimeTotals={realtimeTotals}
               dashboardData={dashboardData}
               transactions={transactions}
               wsConnected={wsConnected}

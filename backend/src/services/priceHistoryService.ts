@@ -136,6 +136,19 @@ export function recordAssetPrice(assetId: number, price: number): void {
 }
 
 /**
+ * Record a price point at a specific timestamp (ms since epoch).
+ * Uses INSERT OR IGNORE to avoid duplicate (asset_id, timestamp).
+ */
+export function recordAssetPriceAt(assetId: number, price: number, timestampMs: number): void {
+  const timestamp = toSqliteDateTimeMs(new Date(timestampMs));
+  run(
+    'INSERT OR IGNORE INTO price_history (asset_id, price, timestamp) VALUES (?, ?, ?)',
+    [assetId, price, timestamp]
+  );
+  saveDB();
+}
+
+/**
  * Get the date range based on the range string
  */
 function getDateRange(range: string): { startDate: string; endDate: string } {

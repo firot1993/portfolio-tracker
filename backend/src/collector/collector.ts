@@ -1,25 +1,13 @@
-import { query, run, saveDB, withTransaction } from '../db/index.js';
-import { getAssetPrice, getUSDCNYRate, getHistoricalDailyPrices } from '../services/priceService.js';
-import pLimit from 'p-limit';
+import { query, run, saveDB } from '../db/index.js';
+import { getUSDCNYRate, getHistoricalDailyPrices } from '../services/priceService.js';
 
 type RunStatus = 'success' | 'failed' | 'partial';
 type RunType = 'daily' | 'hourly' | 'backfill';
 
-interface AssetInfo {
-  id: number;
-  symbol: string;
-  type: string;
-  currency: string;
-  current_price: number | null;
-}
-
 // Configuration
-const CONCURRENCY_LIMIT = 5;
 const PRICE_FETCH_RETRIES = 3;
 const RETRY_DELAY_BASE_MS = 1000;
 const DEFAULT_DATA_RETENTION_DAYS = 365 * 2; // 2 years
-
-const limit = pLimit(CONCURRENCY_LIMIT);
 
 function getTodayKey(date = new Date()): string {
   return date.toISOString().split('T')[0];
@@ -67,15 +55,6 @@ function finishRun(id: number, status: RunStatus, errorMessage?: string): void {
     'UPDATE collector_runs SET status = ?, finished_at = datetime("now"), error_message = ? WHERE id = ?',
     [status, errorMessage || null, id]
   );
-}
-
-function getTrackedAssets(): AssetInfo[] {
-  return query(`
-    SELECT a.id, a.symbol, a.type, a.currency, a.current_price
-    FROM assets a
-    WHERE a.id IN (SELECT DISTINCT asset_id FROM holdings)
-    ORDER BY a.type, a.symbol
-  `) as AssetInfo[];
 }
 
 function getRangeDates(range: string): Date[] {
@@ -186,10 +165,6 @@ async function withRetry<T>(
   throw lastError || new Error('Retry failed');
 }
 
-async function fetchAssetPriceWithRetry(symbol: string, type: string): Promise<number | null> {
-  return withRetry(() => getAssetPrice(symbol, type));
-}
-
 export async function runDailyCollector(): Promise<void> {
   const runKey = getTodayKey();
   if (hasSuccessfulRun('daily', runKey)) {
@@ -205,60 +180,16 @@ export async function runDailyCollector(): Promise<void> {
   console.log(`[Collector] Starting daily collector for ${runKey}`);
 
   try {
-    const assets = getTrackedAssets();
-    console.log(`[Collector] Processing ${assets.length} tracked assets`);
-
     const usdcny = await withRetry(getUSDCNYRate);
     if (!usdcny) {
       throw new Error('Failed to fetch USD/CNY rate after retries');
     }
     console.log(`[Collector] USD/CNY rate: ${usdcny}`);
-
-    // Parallel price fetching with concurrency limit
-    let successCount = 0;
-    let failureCount = 0;
-    const failedAssets: string[] = [];
-
-    await Promise.all(
-      assets.map(asset =>
-        limit(async () => {
-          try {
-            const price = await fetchAssetPriceWithRetry(asset.symbol, asset.type);
-            if (price !== null) {
-              await withTransaction(() => {
-                run(
-                  'UPDATE assets SET current_price = ?, price_updated_at = datetime("now") WHERE id = ?',
-                  [price, asset.id]
-                );
-                recordPriceHistory(asset.id, price);
-                saveDB();
-              });
-              successCount++;
-              console.log(`[Collector] ✓ ${asset.symbol}: $${price}`);
-            } else {
-              failureCount++;
-              failedAssets.push(asset.symbol);
-              console.warn(`[Collector] ✗ ${asset.symbol}: Price fetch returned null`);
-            }
-          } catch (error: any) {
-            failureCount++;
-            failedAssets.push(asset.symbol);
-            console.warn(`[Collector] ✗ ${asset.symbol}: ${error?.message}`);
-          }
-        })
-      )
-    );
-
-    console.log(`[Collector] Price fetch complete: ${successCount} success, ${failureCount} failed`);
+    console.log('[Collector] Skipping bulk price fetch (realtime service updates prices).');
 
     await recordSnapshotForDate(runKey, usdcny);
     await saveDB();
     console.log(`[Collector] Snapshot recorded for ${runKey}`);
-
-    if (failureCount > 0) {
-      status = 'partial';
-      errorMessage = `${failureCount} assets failed to fetch: ${failedAssets.join(', ')}`;
-    }
   } catch (err: any) {
     status = 'failed';
     errorMessage = err?.message || 'Collector failed';
