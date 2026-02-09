@@ -12,7 +12,7 @@ import { initWebSocketServer } from './routes/ws.js';
 import { realtimePriceService } from './services/realtimePriceService.js';
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = parseInt(process.env.PORT || '3001', 10);
 
 app.use(cors());
 app.use(express.json());
