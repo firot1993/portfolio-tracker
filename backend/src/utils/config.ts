@@ -9,6 +9,10 @@ interface Config {
   api: {
     port: number;
   };
+  tiingo?: {
+    apiKey: string;
+    enabled: boolean;
+  };
 }
 
 let config: Config;
@@ -24,7 +28,18 @@ function loadConfig(): Config {
   }
   
   const configData = fs.readFileSync(configPath, 'utf8');
-  return JSON.parse(configData) as Config;
+  const config = JSON.parse(configData) as Config;
+  
+  // Override tiingo config from environment variables if available
+  if (process.env.TIINGO_API_KEY) {
+    config.tiingo = {
+      ...config.tiingo,
+      apiKey: process.env.TIINGO_API_KEY,
+      enabled: true,
+    };
+  }
+  
+  return config;
 }
 
 export function getConfig(): Config {

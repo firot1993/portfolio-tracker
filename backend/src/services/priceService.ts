@@ -215,22 +215,99 @@ export const getCryptoPrice = withCache(
   (symbol: string) => `crypto:${symbol.toUpperCase()}`
 );
 
-// Yahoo Finance for US stocks
-async function getUSStockPriceImpl(symbol: string): Promise<number | null> {
+// Tiingo API for US stocks (more reliable)
+async function getTiingoStockPrice(symbol: string): Promise<number | null> {
   try {
+    // Try to get API key from config or env
+    const tiingoApiKey = config.tiingo?.apiKey || process.env.TIINGO_API_KEY;
+    const tiingoEnabled = config.tiingo?.enabled || !!process.env.TIINGO_API_KEY;
+    
+    console.log(`[PriceService] Tiingo config: enabled=${tiingoEnabled}, hasKey=${!!tiingoApiKey}`);
+    
+    if (!tiingoEnabled || !tiingoApiKey) {
+      console.log(`[PriceService] Tiingo not configured, skipping`);
+      return null;
+    }
+    
+    console.log(`[PriceService] Fetching Tiingo price for ${symbol}...`);
+    
     const response = await api.get(
-      `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=1d`
+      `https://api.tiingo.com/tiingo/daily/${symbol}/prices?token=${tiingoApiKey}`,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      }
     );
-    const result = response.data.chart.result?.[0];
-    return result?.meta?.regularMarketPrice || null;
+    
+    console.log(`[PriceService] Tiingo response for ${symbol}:`, JSON.stringify(response.data).slice(0, 200));
+    
+    // Tiingo returns an array, get the latest price
+    const data = response.data;
+    if (Array.isArray(data) && data.length > 0) {
+      const price = data[0].close || data[0].adjClose || null;
+      console.log(`[PriceService] Tiingo price for ${symbol}: ${price}`);
+      return price;
+    }
+    console.log(`[PriceService] Tiingo returned empty data for ${symbol}`);
+    return null;
   } catch (error) {
-    console.error(`Failed to fetch US stock price for ${symbol}:`, error);
+    console.error(`[PriceService] Failed to fetch Tiingo price for ${symbol}:`, (error as any).message);
+    if ((error as any).response?.data) {
+      console.error(`[PriceService] Tiingo error response:`, (error as any).response.data);
+    }
     return null;
   }
 }
 
+// Yahoo Finance for US stocks
+async function getUSStockPriceImpl(symbol: string): Promise<number | null> {
+  try {
+    console.log(`[PriceService] Yahoo Finance: fetching ${symbol}...`);
+    const response = await api.get(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=1d`
+    );
+    const result = response.data.chart.result?.[0];
+    const price = result?.meta?.regularMarketPrice || null;
+    if (price) {
+      console.log(`[PriceService] Yahoo Finance: ${symbol} = ${price}`);
+    } else {
+      console.log(`[PriceService] Yahoo Finance: ${symbol} no price in response`);
+    }
+    return price;
+  } catch (error) {
+    const errorMsg = (error as any).message || 'Unknown error';
+    console.error(`[PriceService] Yahoo Finance failed for ${symbol}: ${errorMsg}`);
+    return null;
+  }
+}
+
+// US stock price with fallback to Tiingo
+async function getUSStockPriceWithFallback(symbol: string): Promise<number | null> {
+  console.log(`[PriceService] Getting US stock price for ${symbol}...`);
+  
+  // Try Yahoo Finance first
+  console.log(`[PriceService] Trying Yahoo Finance for ${symbol}...`);
+  const yahooPrice = await getUSStockPriceImpl(symbol);
+  if (yahooPrice !== null) {
+    console.log(`[PriceService] Yahoo Finance price for ${symbol}: ${yahooPrice}`);
+    return yahooPrice;
+  }
+  
+  // Fallback to Tiingo if enabled
+  console.log(`[PriceService] Yahoo Finance failed for ${symbol}, trying Tiingo...`);
+  const tiingoPrice = await getTiingoStockPrice(symbol);
+  if (tiingoPrice !== null) {
+    console.log(`[PriceService] Using Tiingo price for ${symbol}: ${tiingoPrice}`);
+    return tiingoPrice;
+  }
+  
+  console.log(`[PriceService] All sources failed for ${symbol}`);
+  return null;
+}
+
 export const getUSStockPrice = withCache(
-  getUSStockPriceImpl,
+  getUSStockPriceWithFallback,
   (symbol: string) => `us_stock:${symbol.toUpperCase()}`
 );
 
@@ -306,6 +383,94 @@ export const getUSDCNYRate = withCache(
   getUSDCNYRateImpl,
   () => 'usd_cny'
 );
+
+function toDateStringUTC(timestampMs: number): string {
+  return new Date(timestampMs).toISOString().split('T')[0];
+}
+
+async function fetchYahooDailyHistory(ticker: string, startDate: string, endDate: string): Promise<Array<{ date: string; price: number }>> {
+  const startSec = Math.floor(new Date(startDate).getTime() / 1000);
+  const endSec = Math.floor(new Date(endDate).getTime() / 1000) + 86400;
+
+  const response = await api.get(
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?period1=${startSec}&period2=${endSec}&interval=1d&includeAdjustedClose=true&events=div%7Csplit`
+  );
+
+  const result = response.data.chart?.result?.[0];
+  const timestamps: number[] = result?.timestamp || [];
+  const quote = result?.indicators?.quote?.[0];
+  const adj = result?.indicators?.adjclose?.[0];
+  const closes: Array<number | null> = adj?.adjclose || quote?.close || [];
+
+  const points: Array<{ date: string; price: number }> = [];
+  for (let i = 0; i < timestamps.length; i++) {
+    const price = closes[i];
+    if (price === null || price === undefined) continue;
+    points.push({ date: toDateStringUTC(timestamps[i] * 1000), price });
+  }
+  return points.sort((a, b) => a.date.localeCompare(b.date));
+}
+
+async function fetchCoinGeckoDailyHistory(symbol: string, startDate: string, endDate: string): Promise<Array<{ date: string; price: number }>> {
+  const coinMap: Record<string, string> = {
+    'BTC': 'bitcoin',
+    'ETH': 'ethereum',
+    'SOL': 'solana',
+    'BNB': 'binancecoin',
+    'XRP': 'ripple',
+    'ADA': 'cardano',
+    'DOGE': 'dogecoin',
+    'DOT': 'polkadot',
+  };
+  const coinId = coinMap[symbol.toUpperCase()] || symbol.toLowerCase();
+  const from = Math.floor(new Date(startDate).getTime() / 1000);
+  const to = Math.floor(new Date(endDate).getTime() / 1000) + 86400;
+
+  const response = await api.get(
+    `https://api.coingecko.com/api/v3/coins/${encodeURIComponent(coinId)}/market_chart/range?vs_currency=usd&from=${from}&to=${to}`
+  );
+  const prices: Array<[number, number]> = response.data?.prices || [];
+
+  // Reduce to daily close by taking the last entry per day
+  const byDate = new Map<string, number>();
+  for (const [tsMs, price] of prices) {
+    const date = toDateStringUTC(tsMs);
+    byDate.set(date, price);
+  }
+  return Array.from(byDate.entries())
+    .map(([date, price]) => ({ date, price }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function getYahooTicker(symbol: string, type: string): string {
+  if (type === 'gold') return 'XAUUSD=X';
+  if (type === 'stock_cn') {
+    if (symbol.endsWith('.SS') || symbol.endsWith('.SZ')) return symbol;
+    if (symbol.startsWith('6')) return `${symbol}.SS`;
+    return `${symbol}.SZ`;
+  }
+  return symbol;
+}
+
+export async function getHistoricalDailyPrices(
+  symbol: string,
+  type: string,
+  startDate: string,
+  endDate: string
+): Promise<Array<{ date: string; price: number }>> {
+  try {
+    if (type === 'crypto') {
+      return await fetchCoinGeckoDailyHistory(symbol, startDate, endDate);
+    }
+    if (type === 'stock_us' || type === 'stock_cn' || type === 'gold') {
+      const ticker = getYahooTicker(symbol, type);
+      return await fetchYahooDailyHistory(ticker, startDate, endDate);
+    }
+  } catch (error) {
+    console.error(`Failed to fetch historical prices for ${symbol} (${type}):`, error);
+  }
+  return [];
+}
 
 // Unified price fetcher
 export async function getAssetPrice(symbol: string, type: string): Promise<number | null> {
