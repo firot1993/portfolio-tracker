@@ -1,12 +1,13 @@
 import { Router } from 'express';
 import { query, run, saveDB } from '../db/index.js';
-import { 
-  getPortfolioHistory, 
+import {
+  getPortfolioHistory,
   getAssetHistory,
   recordAssetPrice,
   getAvailableHistoryRange
 } from '../services/priceHistoryService.js';
 import { runDailyCollector, runQueuedBackfills, getCollectorStats } from '../collector/collector.js';
+import { authMiddleware } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -25,11 +26,12 @@ interface ApiResponse<T> {
 // Get portfolio history
 // Query params:
 //   - range: '1D' | '1W' | '1M' | '3M' | '6M' | '1Y' | 'YTD' | 'ALL'
-router.get('/portfolio', async (req, res) => {
+router.get('/portfolio', authMiddleware, async (req, res) => {
   try {
+    const userId = (req as any).user.id;
     const range = (req.query.range as string) || '1M';
     const validRanges = ['1D', '1W', '1M', '3M', '6M', '1Y', 'YTD', 'ALL'];
-    
+
     if (!validRanges.includes(range)) {
       const response: ApiResponse<never> = {
         success: false,
@@ -38,8 +40,8 @@ router.get('/portfolio', async (req, res) => {
       return res.status(400).json(response);
     }
 
-    const data = await getPortfolioHistory(range);
-    
+    const data = await getPortfolioHistory(range, userId);
+
     const response: ApiResponse<typeof data> = {
       success: true,
       data,
@@ -49,7 +51,7 @@ router.get('/portfolio', async (req, res) => {
         timestamp: new Date().toISOString()
       }
     };
-    
+
     res.json(response);
   } catch (error: any) {
     console.error('Error fetching portfolio history:', error);
@@ -64,11 +66,12 @@ router.get('/portfolio', async (req, res) => {
 // Get asset price history
 // Query params:
 //   - range: '1D' | '1W' | '1M' | '3M' | '6M' | '1Y' | 'YTD' | 'ALL'
-router.get('/asset/:id', async (req, res) => {
+router.get('/asset/:id', authMiddleware, async (req, res) => {
   try {
+    const userId = (req as any).user.id;
     const assetId = parseInt(req.params.id);
     const range = (req.query.range as string) || '1M';
-    
+
     if (isNaN(assetId)) {
       const response: ApiResponse<never> = {
         success: false,
@@ -86,8 +89,11 @@ router.get('/asset/:id', async (req, res) => {
       return res.status(400).json(response);
     }
 
-    // Get asset info
-    const asset = query('SELECT id, symbol, name FROM assets WHERE id = ?', [assetId])[0];
+    // Get asset info and verify ownership
+    const asset = query(
+      'SELECT id, symbol, name FROM assets WHERE id = ? AND (user_id = ? OR user_id IS NULL)',
+      [assetId, userId]
+    )[0];
     if (!asset) {
       const response: ApiResponse<never> = {
         success: false,
@@ -96,8 +102,8 @@ router.get('/asset/:id', async (req, res) => {
       return res.status(404).json(response);
     }
 
-    const data = await getAssetHistory(assetId, range);
-    
+    const data = await getAssetHistory(assetId, range, userId);
+
     const response: ApiResponse<typeof data> = {
       success: true,
       data,
@@ -107,7 +113,7 @@ router.get('/asset/:id', async (req, res) => {
         timestamp: new Date().toISOString()
       }
     };
-    
+
     res.json(response);
   } catch (error: any) {
     console.error('Error fetching asset history:', error);
@@ -120,9 +126,10 @@ router.get('/asset/:id', async (req, res) => {
 });
 
 // Manually trigger a portfolio snapshot
-router.post('/snapshot', async (req, res) => {
+router.post('/snapshot', authMiddleware, async (req, res) => {
   try {
-    await runDailyCollector();
+    const userId = (req as any).user.id;
+    await runDailyCollector(userId);
     const response: ApiResponse<{ message: string }> = {
       success: true,
       data: { message: 'Collector run completed' },
@@ -140,10 +147,11 @@ router.post('/snapshot', async (req, res) => {
 });
 
 // Run queued backfill jobs
-router.post('/backfill/run', async (req, res) => {
+router.post('/backfill/run', authMiddleware, async (req, res) => {
   try {
-    await runQueuedBackfills();
-    const stats = getCollectorStats();
+    const userId = (req as any).user.id;
+    await runQueuedBackfills(userId);
+    const stats = getCollectorStats(userId);
     const response: ApiResponse<{ message: string; stats: typeof stats }> = {
       success: true,
       data: { message: 'Backfill processing completed', stats },
@@ -161,9 +169,10 @@ router.post('/backfill/run', async (req, res) => {
 });
 
 // Get collector statistics
-router.get('/stats', (req, res) => {
+router.get('/stats', authMiddleware, (req, res) => {
   try {
-    const stats = getCollectorStats();
+    const userId = (req as any).user.id;
+    const stats = getCollectorStats(userId);
     const response: ApiResponse<typeof stats> = {
       success: true,
       data: stats,
@@ -181,11 +190,12 @@ router.get('/stats', (req, res) => {
 });
 
 // Record a price point for an asset (for tracking price history)
-router.post('/asset/:id/price', (req, res) => {
+router.post('/asset/:id/price', authMiddleware, (req, res) => {
   try {
+    const userId = (req as any).user.id;
     const assetId = parseInt(req.params.id);
     const { price } = req.body;
-    
+
     if (isNaN(assetId)) {
       const response: ApiResponse<never> = {
         success: false,
@@ -193,7 +203,7 @@ router.post('/asset/:id/price', (req, res) => {
       };
       return res.status(400).json(response);
     }
-    
+
     if (typeof price !== 'number' || price <= 0) {
       const response: ApiResponse<never> = {
         success: false,
@@ -202,8 +212,11 @@ router.post('/asset/:id/price', (req, res) => {
       return res.status(400).json(response);
     }
 
-    // Verify asset exists
-    const asset = query('SELECT id FROM assets WHERE id = ?', [assetId])[0];
+    // Verify asset exists and belongs to user
+    const asset = query(
+      'SELECT id FROM assets WHERE id = ? AND (user_id = ? OR user_id IS NULL)',
+      [assetId, userId]
+    )[0];
     if (!asset) {
       const response: ApiResponse<never> = {
         success: false,
@@ -212,8 +225,8 @@ router.post('/asset/:id/price', (req, res) => {
       return res.status(404).json(response);
     }
 
-    recordAssetPrice(assetId, price);
-    
+    recordAssetPrice(assetId, price, userId);
+
     const response: ApiResponse<{ assetId: number; price: number; timestamp: string }> = {
       success: true,
       data: {
@@ -223,7 +236,7 @@ router.post('/asset/:id/price', (req, res) => {
       },
       meta: { timestamp: new Date().toISOString() }
     };
-    
+
     res.status(201).json(response);
   } catch (error: any) {
     console.error('Error recording price:', error);
@@ -236,9 +249,10 @@ router.post('/asset/:id/price', (req, res) => {
 });
 
 // Get available history range
-router.get('/range', (req, res) => {
+router.get('/range', authMiddleware, (req, res) => {
   try {
-    const range = getAvailableHistoryRange();
+    const userId = (req as any).user.id;
+    const range = getAvailableHistoryRange(userId);
     const response: ApiResponse<typeof range> = {
       success: true,
       data: range,
@@ -256,10 +270,11 @@ router.get('/range', (req, res) => {
 });
 
 // Batch record prices (for efficient price history tracking)
-router.post('/prices/batch', (req, res) => {
+router.post('/prices/batch', authMiddleware, (req, res) => {
   try {
+    const userId = (req as any).user.id;
     const { prices } = req.body; // Array of { asset_id, price }
-    
+
     if (!Array.isArray(prices) || prices.length === 0) {
       const response: ApiResponse<never> = {
         success: false,
@@ -271,11 +286,11 @@ router.post('/prices/batch', (req, res) => {
     let recorded = 0;
     for (const item of prices) {
       if (item.asset_id && typeof item.price === 'number' && item.price > 0) {
-        recordAssetPrice(item.asset_id, item.price);
+        recordAssetPrice(item.asset_id, item.price, userId);
         recorded++;
       }
     }
-    
+
     const response: ApiResponse<{ recorded: number; total: number }> = {
       success: true,
       data: {
@@ -284,7 +299,7 @@ router.post('/prices/batch', (req, res) => {
       },
       meta: { timestamp: new Date().toISOString() }
     };
-    
+
     res.json(response);
   } catch (error: any) {
     console.error('Error recording batch prices:', error);

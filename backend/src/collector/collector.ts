@@ -17,18 +17,18 @@ function getHourKey(date = new Date()): string {
   return date.toISOString().slice(0, 13);
 }
 
-function hasSuccessfulRun(runType: RunType, runKey: string): boolean {
+function hasSuccessfulRun(runType: RunType, runKey: string, userId: number): boolean {
   const existing = query(
-    'SELECT id FROM collector_runs WHERE run_type = ? AND run_key = ? AND status = ?',
-    [runType, runKey, 'success']
+    'SELECT id FROM collector_runs WHERE user_id = ? AND run_type = ? AND run_key = ? AND status = ?',
+    [userId, runType, runKey, 'success']
   );
   return existing.length > 0;
 }
 
-function startRun(runType: RunType, runKey: string): number {
+function startRun(runType: RunType, runKey: string, userId: number): number {
   const existing = query(
-    'SELECT id FROM collector_runs WHERE run_type = ? AND run_key = ?',
-    [runType, runKey]
+    'SELECT id FROM collector_runs WHERE user_id = ? AND run_type = ? AND run_key = ?',
+    [userId, runType, runKey]
   );
   if (existing.length > 0) {
     const id = existing[0].id as number;
@@ -40,8 +40,8 @@ function startRun(runType: RunType, runKey: string): number {
   }
 
   run(
-    'INSERT INTO collector_runs (run_type, run_key, status, started_at) VALUES (?, ?, ?, datetime("now"))',
-    [runType, runKey, 'running']
+    'INSERT INTO collector_runs (user_id, run_type, run_key, status, started_at) VALUES (?, ?, ?, ?, datetime("now"))',
+    [userId, runType, runKey, 'running']
   );
   const result = query('SELECT last_insert_rowid() as id')[0];
   if (!result?.id) {
@@ -97,24 +97,22 @@ function toSqliteDateTime(date: Date): string {
   return iso.slice(0, 19).replace('T', ' ');
 }
 
-async function recordPriceHistory(assetId: number, price: number, timestamp?: Date): Promise<void> {
-  if (timestamp) {
-    run('INSERT OR IGNORE INTO price_history (asset_id, price, timestamp) VALUES (?, ?, ?)', [
-      assetId,
-      price,
-      toSqliteDateTime(timestamp),
-    ]);
-  } else {
-    run('INSERT INTO price_history (asset_id, price) VALUES (?, ?)', [assetId, price]);
-  }
+async function recordPriceHistory(assetId: number, price: number, timestamp: Date, userId: number): Promise<void> {
+  run('INSERT OR IGNORE INTO price_history (user_id, asset_id, price, timestamp) VALUES (?, ?, ?, ?)', [
+    userId,
+    assetId,
+    price,
+    toSqliteDateTime(timestamp),
+  ]);
 }
 
-async function recordSnapshotForDate(snapshotDate: string, usdcny: number): Promise<void> {
+async function recordSnapshotForDate(snapshotDate: string, usdcny: number, userId: number): Promise<void> {
   const holdings = query(`
     SELECT h.quantity, h.avg_cost, a.symbol, a.type, a.currency, a.current_price
     FROM holdings h
     JOIN assets a ON h.asset_id = a.id
-  `);
+    WHERE h.user_id = ?
+  `, [userId]);
 
   let totalValueUSD = 0;
   let totalCostUSD = 0;
@@ -136,8 +134,8 @@ async function recordSnapshotForDate(snapshotDate: string, usdcny: number): Prom
   }
 
   run(
-    'INSERT OR IGNORE INTO price_snapshots (snapshot_date, total_value_usd, total_cost_usd, usdcny_rate) VALUES (?, ?, ?, ?)',
-    [snapshotDate, totalValueUSD, totalCostUSD, usdcny]
+    'INSERT INTO price_snapshots (user_id, snapshot_date, total_value_usd, total_cost_usd, usdcny_rate) VALUES (?, ?, ?, ?, ?)',
+    [userId, snapshotDate, totalValueUSD, totalCostUSD, usdcny]
   );
 }
 
@@ -148,7 +146,7 @@ async function withRetry<T>(
   retryDelayMs: number = RETRY_DELAY_BASE_MS
 ): Promise<T> {
   let lastError: Error | undefined;
-  
+
   for (let i = 0; i < retries; i++) {
     try {
       return await fn();
@@ -161,23 +159,23 @@ async function withRetry<T>(
       }
     }
   }
-  
+
   throw lastError || new Error('Retry failed');
 }
 
-export async function runDailyCollector(): Promise<void> {
+export async function runDailyCollector(userId: number): Promise<void> {
   const runKey = getTodayKey();
-  if (hasSuccessfulRun('daily', runKey)) {
+  if (hasSuccessfulRun('daily', runKey, userId)) {
     console.log(`[Collector] Daily run ${runKey} already completed.`);
     return;
   }
 
-  const runId = startRun('daily', runKey);
+  const runId = startRun('daily', runKey, userId);
   let status: RunStatus = 'success';
   let errorMessage: string | undefined;
   const startTime = Date.now();
 
-  console.log(`[Collector] Starting daily collector for ${runKey}`);
+  console.log(`[Collector] Starting daily collector for ${runKey} (user ${userId})`);
 
   try {
     const usdcny = await withRetry(getUSDCNYRate);
@@ -187,7 +185,7 @@ export async function runDailyCollector(): Promise<void> {
     console.log(`[Collector] USD/CNY rate: ${usdcny}`);
     console.log('[Collector] Skipping bulk price fetch (realtime service updates prices).');
 
-    await recordSnapshotForDate(runKey, usdcny);
+    await recordSnapshotForDate(runKey, usdcny, userId);
     await saveDB();
     console.log(`[Collector] Snapshot recorded for ${runKey}`);
   } catch (err: any) {
@@ -202,8 +200,11 @@ export async function runDailyCollector(): Promise<void> {
   }
 }
 
-export async function runBackfill(assetId: number, range: string): Promise<{ status: RunStatus; errorMessage?: string }> {
-  const asset = query('SELECT id, symbol, type FROM assets WHERE id = ?', [assetId])[0] as any;
+export async function runBackfill(assetId: number, range: string, userId: number): Promise<{ status: RunStatus; errorMessage?: string }> {
+  const asset = query(
+    'SELECT id, symbol, type FROM assets WHERE id = ? AND (user_id = ? OR user_id IS NULL)',
+    [assetId, userId]
+  )[0] as any;
   if (!asset) {
     throw new Error('Asset not found');
   }
@@ -214,12 +215,12 @@ export async function runBackfill(assetId: number, range: string): Promise<{ sta
   }
 
   const runKey = `${assetId}:${range}:${dates[0].toISOString().split('T')[0]}`;
-  if (hasSuccessfulRun('backfill', runKey)) {
+  if (hasSuccessfulRun('backfill', runKey, userId)) {
     console.log(`[Collector] Backfill ${runKey} already completed.`);
     return { status: 'success' };
   }
 
-  const runId = startRun('backfill', runKey);
+  const runId = startRun('backfill', runKey, userId);
   let status: RunStatus = 'success';
   let errorMessage: string | undefined;
   const startTime = Date.now();
@@ -244,7 +245,7 @@ export async function runBackfill(assetId: number, range: string): Promise<{ sta
       const ts = new Date(year, month - 1, day);
 
       if (Number.isFinite(point.price) && point.price > 0) {
-        await recordPriceHistory(asset.id, point.price, ts);
+        await recordPriceHistory(asset.id, point.price, ts, userId);
         validPoints++;
       } else {
         invalidPoints++;
@@ -274,13 +275,13 @@ export async function runBackfill(assetId: number, range: string): Promise<{ sta
   return { status, errorMessage };
 }
 
-export async function runQueuedBackfills(): Promise<void> {
+export async function runQueuedBackfills(userId: number): Promise<void> {
   const jobs = query(
-    'SELECT id, asset_id, range FROM backfill_jobs WHERE status = ? ORDER BY requested_at LIMIT 5',
-    ['queued']
+    'SELECT id, asset_id, range FROM backfill_jobs WHERE user_id = ? AND status = ? ORDER BY requested_at LIMIT 5',
+    [userId, 'queued']
   ) as Array<{ id: number; asset_id: number; range: string }>;
 
-  console.log(`[Collector] Processing ${jobs.length} backfill jobs`);
+  console.log(`[Collector] Processing ${jobs.length} backfill jobs for user ${userId}`);
 
   for (const job of jobs) {
     // Atomic claim: only update if still queued
@@ -302,7 +303,7 @@ export async function runQueuedBackfills(): Promise<void> {
     let jobError: string | undefined;
 
     try {
-      const result = await runBackfill(job.asset_id, job.range);
+      const result = await runBackfill(job.asset_id, job.range, userId);
       jobStatus = result.status;
       jobError = result.errorMessage;
       console.log(`[Collector] Job ${job.id} completed with status: ${jobStatus}`);
@@ -321,17 +322,17 @@ export async function runQueuedBackfills(): Promise<void> {
 }
 
 // Data retention cleanup
-export async function cleanupOldData(retentionDays: number = DEFAULT_DATA_RETENTION_DAYS): Promise<{ deletedHistory: number; deletedSnapshots: number }> {
+export async function cleanupOldData(userId: number, retentionDays: number = DEFAULT_DATA_RETENTION_DAYS): Promise<{ deletedHistory: number; deletedSnapshots: number }> {
   const cutoffDate = new Date();
   cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
   const cutoffIso = cutoffDate.toISOString();
   const cutoffDateStr = cutoffDate.toISOString().split('T')[0];
 
-  console.log(`[Collector] Cleaning up data older than ${cutoffDateStr} (${retentionDays} days retention)`);
+  console.log(`[Collector] Cleaning up data older than ${cutoffDateStr} (${retentionDays} days retention) for user ${userId}`);
 
-  const historyResult = run('DELETE FROM price_history WHERE timestamp < ?', [cutoffIso]);
-  const snapshotResult = run('DELETE FROM price_snapshots WHERE snapshot_date < ?', [cutoffDateStr]);
-  const runsResult = run('DELETE FROM collector_runs WHERE finished_at < ? AND finished_at IS NOT NULL', [cutoffIso]);
+  const historyResult = run('DELETE FROM price_history WHERE user_id = ? AND timestamp < ?', [userId, cutoffIso]);
+  const snapshotResult = run('DELETE FROM price_snapshots WHERE user_id = ? AND snapshot_date < ?', [userId, cutoffDateStr]);
+  const runsResult = run('DELETE FROM collector_runs WHERE user_id = ? AND finished_at < ? AND finished_at IS NOT NULL', [userId, cutoffIso]);
 
   await saveDB();
 
@@ -344,18 +345,33 @@ export async function cleanupOldData(retentionDays: number = DEFAULT_DATA_RETENT
 }
 
 // Get collector statistics
-export function getCollectorStats(): {
+export function getCollectorStats(userId: number): {
   totalRuns: number;
   successfulRuns: number;
   failedRuns: number;
   pendingJobs: number;
   completedJobs: number;
 } {
-  const totalRuns = query('SELECT COUNT(*) as count FROM collector_runs')[0] as { count: number };
-  const successfulRuns = query("SELECT COUNT(*) as count FROM collector_runs WHERE status = 'success'")[0] as { count: number };
-  const failedRuns = query("SELECT COUNT(*) as count FROM collector_runs WHERE status = 'failed'")[0] as { count: number };
-  const pendingJobs = query("SELECT COUNT(*) as count FROM backfill_jobs WHERE status = 'queued'")[0] as { count: number };
-  const completedJobs = query("SELECT COUNT(*) as count FROM backfill_jobs WHERE status IN ('success', 'partial', 'failed')")[0] as { count: number };
+  const totalRuns = query(
+    'SELECT COUNT(*) as count FROM collector_runs WHERE user_id = ?',
+    [userId]
+  )[0] as { count: number };
+  const successfulRuns = query(
+    "SELECT COUNT(*) as count FROM collector_runs WHERE user_id = ? AND status = 'success'",
+    [userId]
+  )[0] as { count: number };
+  const failedRuns = query(
+    "SELECT COUNT(*) as count FROM collector_runs WHERE user_id = ? AND status = 'failed'",
+    [userId]
+  )[0] as { count: number };
+  const pendingJobs = query(
+    "SELECT COUNT(*) as count FROM backfill_jobs WHERE user_id = ? AND status = 'queued'",
+    [userId]
+  )[0] as { count: number };
+  const completedJobs = query(
+    "SELECT COUNT(*) as count FROM backfill_jobs WHERE user_id = ? AND status IN ('success', 'partial', 'failed')",
+    [userId]
+  )[0] as { count: number };
 
   return {
     totalRuns: totalRuns.count,

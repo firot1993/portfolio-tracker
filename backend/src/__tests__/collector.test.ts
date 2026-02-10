@@ -2,6 +2,8 @@ import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import { initDB, query, run } from '../db/index.js';
 import { runDailyCollector, runBackfill } from '../collector/collector.js';
 
+const TEST_USER_ID = 1;
+
 const mockGetUSDCNYRate = vi.fn().mockResolvedValue(7.2);
 const mockGetHistoricalDailyPrices = vi.fn();
 
@@ -13,33 +15,35 @@ vi.mock('../services/priceService.js', () => ({
 describe('Collector', () => {
   beforeAll(async () => {
     await initDB(true);
+    // Create a test user
+    run('INSERT OR IGNORE INTO users (id, email, password_hash) VALUES (1, "test@portfolio.local", "hash")');
   });
 
   beforeEach(() => {
     mockGetUSDCNYRate.mockClear();
     mockGetHistoricalDailyPrices.mockClear();
 
-    run('DELETE FROM collector_runs');
-    run('DELETE FROM price_snapshots');
-    run('DELETE FROM price_history');
-    run('DELETE FROM transactions');
-    run('DELETE FROM holdings');
-    run('DELETE FROM assets');
+    run('DELETE FROM collector_runs WHERE user_id = ?', [TEST_USER_ID]);
+    run('DELETE FROM price_snapshots WHERE user_id = ?', [TEST_USER_ID]);
+    run('DELETE FROM price_history WHERE user_id = ?', [TEST_USER_ID]);
+    run('DELETE FROM transactions WHERE user_id = ?', [TEST_USER_ID]);
+    run('DELETE FROM holdings WHERE user_id = ?', [TEST_USER_ID]);
+    run('DELETE FROM assets WHERE user_id IS NULL OR user_id = ?', [TEST_USER_ID]);
   });
 
   it('runDailyCollector records a snapshot without bulk price fetching', async () => {
     run(
-      'INSERT INTO assets (id, symbol, name, type, currency, current_price) VALUES (?, ?, ?, ?, ?, ?)',
-      [1, 'BTC', 'Bitcoin', 'crypto', 'USD', 50000]
+      'INSERT INTO assets (id, user_id, symbol, name, type, currency, current_price) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [1, TEST_USER_ID, 'BTC', 'Bitcoin', 'crypto', 'USD', 50000]
     );
     run(
-      'INSERT INTO holdings (asset_id, quantity, avg_cost) VALUES (?, ?, ?)',
-      [1, 0.5, 30000]
+      'INSERT INTO holdings (id, user_id, asset_id, quantity, avg_cost) VALUES (?, ?, ?, ?, ?)',
+      [1, TEST_USER_ID, 1, 0.5, 30000]
     );
 
-    await runDailyCollector();
+    await runDailyCollector(TEST_USER_ID);
 
-    const snapshots = query('SELECT * FROM price_snapshots');
+    const snapshots = query('SELECT * FROM price_snapshots WHERE user_id = ?', [TEST_USER_ID]);
     expect(snapshots.length).toBe(1);
     expect(mockGetUSDCNYRate).toHaveBeenCalledTimes(1);
     expect(mockGetHistoricalDailyPrices).not.toHaveBeenCalled();
@@ -47,8 +51,8 @@ describe('Collector', () => {
 
   it('runBackfill uses historical API and writes price history', async () => {
     run(
-      'INSERT INTO assets (id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?)',
-      [2, 'NVDA', 'NVIDIA', 'stock_us', 'USD']
+      'INSERT INTO assets (id, user_id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?, ?)',
+      [2, TEST_USER_ID, 'NVDA', 'NVIDIA', 'stock_us', 'USD']
     );
 
     mockGetHistoricalDailyPrices.mockResolvedValue([
@@ -56,11 +60,11 @@ describe('Collector', () => {
       { date: '2026-01-02', price: -1 },
     ]);
 
-    const result = await runBackfill(2, '1Y');
+    const result = await runBackfill(2, '1Y', TEST_USER_ID);
     expect(result.status).toBe('partial');
     expect(mockGetHistoricalDailyPrices).toHaveBeenCalledTimes(1);
 
-    const history = query('SELECT * FROM price_history WHERE asset_id = 2');
+    const history = query('SELECT * FROM price_history WHERE asset_id = ? AND user_id = ?', [2, TEST_USER_ID]);
     expect(history.length).toBe(1);
   });
 });

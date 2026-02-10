@@ -1,18 +1,25 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
-import { 
-  TrendingUp, Plus, RefreshCw, Trash2, 
+import {
+  TrendingUp, Plus, RefreshCw, Trash2,
   LayoutDashboard, List, History, Search,
   X, ChevronDown, Wallet, DollarSign, AlertCircle,
   CheckCircle, Loader2, ArrowUpRight, ArrowDownRight,
-  Menu, Bell, Wifi, WifiOff
+  Menu, Bell, Wifi, WifiOff, LogOut, User
 } from 'lucide-react';
-import { 
-  getPortfolioSummary, getTransactions, createAsset, 
-  createTransaction, deleteTransaction, createHolding, 
-  getAssets, deleteAsset, seedDefaultAssets, runBackfills
+import {
+  Routes, Route, useNavigate
+} from 'react-router-dom';
+import {
+  getPortfolioSummary, getTransactions, createAsset,
+  createTransaction, deleteTransaction, createHolding,
+  getAssets, deleteAsset, seedDefaultAssets, runBackfills, logout as logoutApi
 } from './services/api';
+import { useAuth } from './contexts/AuthContext';
 import { useRealtimePrices } from './hooks/useRealtimePrices';
+import ProtectedRoute from './components/ProtectedRoute';
+import Login from './pages/Login';
+import Register from './pages/Register';
 import './App.css';
 import PerformanceChart from './components/PerformanceChart';
 import AssetChartModal from './components/AssetChartModal';
@@ -462,19 +469,21 @@ function Sidebar({
   activeTab, 
   setActiveTab, 
   collapsed, 
-  setCollapsed 
+  setCollapsed,
+  isAssetAdmin
 }: { 
   activeTab: string; 
   setActiveTab: (tab: string) => void;
   collapsed: boolean;
   setCollapsed: (v: boolean) => void;
+  isAssetAdmin: boolean;
 }) {
   const navItems = [
     { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard' },
     { id: 'holdings', icon: Wallet, label: 'Holdings' },
     { id: 'transactions', icon: History, label: 'Transactions' },
     { id: 'assets', icon: List, label: 'Assets' },
-  ];
+  ].filter(item => (isAssetAdmin ? true : item.id !== 'assets'));
 
   return (
     <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
@@ -665,8 +674,19 @@ function Modal({
 
 // Main App Component
 function App() {
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('dashboard');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const isAssetAdmin = useMemo(() => {
+    const raw = import.meta.env.VITE_ASSET_ADMIN_EMAILS || '';
+    const allowed = raw
+      .split(',')
+      .map((email: string) => email.trim().toLowerCase())
+      .filter(Boolean);
+    if (!user || allowed.length === 0) return false;
+    return allowed.includes(user.email.toLowerCase());
+  }, [user]);
   const [summary, setSummary] = useState<PortfolioSummary | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -775,6 +795,12 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (!isAssetAdmin && activeTab === 'assets') {
+      setActiveTab('dashboard');
+    }
+  }, [isAssetAdmin, activeTab]);
+
   // Seed default assets
   const handleSeedAssets = async () => {
     try {
@@ -788,6 +814,18 @@ function App() {
       } else {
         showToast('Failed to seed assets', 'error');
       }
+    }
+  };
+
+  // Handle logout
+  const handleLogout = async () => {
+    try {
+      await logout();
+      await logoutApi();
+      navigate('/login');
+    } catch (err) {
+      console.error('Logout error:', err);
+      navigate('/login');
     }
   };
 
@@ -1080,137 +1118,169 @@ function App() {
   );
 
   return (
-    <div className="app-container">
-      <Sidebar 
-        activeTab={activeTab} 
-        setActiveTab={setActiveTab}
-        collapsed={sidebarCollapsed}
-        setCollapsed={setSidebarCollapsed}
-      />
-      
-      <main className={`main-content ${sidebarCollapsed ? 'expanded' : ''}`}>
-        {/* Header */}
-        <header className="top-header">
-          <div className="header-left">
-            <h1>{activeTab.charAt(0).toUpperCase() + activeTab.slice(1)}</h1>
-          </div>
-          <div className="header-right">
-            {/* WebSocket Connection Status */}
-            <div 
-              className={`ws-status ${wsConnected ? 'connected' : 'disconnected'}`}
-              title={wsConnected 
-                ? `Realtime: ${wsStats?.cryptoCount || 0} crypto, ${wsStats?.stockUsCount || 0} stocks` 
-                : 'Realtime disconnected'
-              }
-            >
-              {wsConnected ? <Wifi size={16} /> : <WifiOff size={16} />}
-              {wsConnected && (
-                <span className="ws-badge">
-                  {wsStats?.trackedAssets || 0}
-                </span>
+    <Routes>
+      {/* Public Routes */}
+      <Route path="/login" element={<Login />} />
+      <Route path="/register" element={<Register />} />
+
+      {/* Protected Routes */}
+      <Route
+        path="/*"
+        element={
+          <ProtectedRoute>
+            <div className="app-container">
+              <Sidebar
+                activeTab={activeTab}
+                setActiveTab={setActiveTab}
+                collapsed={sidebarCollapsed}
+                setCollapsed={setSidebarCollapsed}
+                isAssetAdmin={isAssetAdmin}
+              />
+
+              <main className={`main-content ${sidebarCollapsed ? 'expanded' : ''}`}>
+                {/* Header */}
+                <header className="top-header">
+                  <div className="header-left">
+                    <h1>{activeTab.charAt(0).toUpperCase() + activeTab.slice(1)}</h1>
+                  </div>
+                  <div className="header-right">
+                    {/* WebSocket Connection Status */}
+                    <div
+                      className={`ws-status ${wsConnected ? 'connected' : 'disconnected'}`}
+                      title={wsConnected
+                        ? `Realtime: ${wsStats?.cryptoCount || 0} crypto, ${wsStats?.stockUsCount || 0} stocks`
+                        : 'Realtime disconnected'
+                      }
+                    >
+                      {wsConnected ? <Wifi size={16} /> : <WifiOff size={16} />}
+                      {wsConnected && (
+                        <span className="ws-badge">
+                          {wsStats?.trackedAssets || 0}
+                        </span>
+                      )}
+                    </div>
+
+                    {stalePrices && !priceRefreshing && (
+                      <span className="price-stale-indicator" title="Prices may be outdated">
+                        <AlertCircle size={16} />
+                      </span>
+                    )}
+                    <button
+                      onClick={handleRefreshPrices}
+                      className="btn-icon"
+                      disabled={priceRefreshing}
+                      title={wsConnected ? 'Realtime active (WebSocket)' : 'Refresh prices from API'}
+                    >
+                      <RefreshCw size={18} className={priceRefreshing || wsConnected ? 'spin' : ''} />
+                    </button>
+                    <button
+                      onClick={() => loadData(true)}
+                      className="btn-icon"
+                      disabled={refreshing}
+                      title="Reload data"
+                    >
+                      <List size={18} className={refreshing ? 'spin' : ''} />
+                    </button>
+                    <div className="header-actions">
+                      <button onClick={() => setShowAddTx(true)} className="btn-primary">
+                        <Plus size={16} /> Quick Add
+                      </button>
+                    </div>
+
+                    {/* User Menu */}
+                    {user && (
+                      <div className="user-menu" style={{ marginLeft: '12px' }}>
+                        <button
+                          className="user-email"
+                          onClick={handleLogout}
+                          title="Click to logout"
+                        >
+                          <User size={14} />
+                          <span>{user.email}</span>
+                          <LogOut size={14} />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </header>
+
+                {/* Content */}
+                <div className="content">
+                  {activeTab === 'dashboard' && (
+                    <DashboardContent
+                      loading={loading}
+                      summary={summary}
+                      realtimeTotals={realtimeTotals}
+                      dashboardData={dashboardData}
+                      transactions={transactions}
+                      wsConnected={wsConnected}
+                      getRealtimePrice={getRealtimePrice}
+                      setActiveTab={setActiveTab}
+                      setShowAddHolding={setShowAddHolding}
+                      setShowAddTx={setShowAddTx}
+                    />
+                  )}
+                  {activeTab === 'holdings' && <HoldingsView />}
+                  {activeTab === 'transactions' && <TransactionsView />}
+                  {activeTab === 'assets' && isAssetAdmin && <AssetsView />}
+                </div>
+              </main>
+
+              {/* Toasts */}
+              <ToastContainer toasts={toasts} removeToast={removeToast} />
+
+              {/* Modals */}
+              {isAssetAdmin && (
+                <AddAssetModal
+                  isOpen={showAddAsset}
+                  onClose={() => setShowAddAsset(false)}
+                  onSuccess={() => {
+                    showToast('Asset added successfully', 'success');
+                    loadData();
+                  }}
+                  showToast={showToast}
+                />
               )}
+
+              <AddTransactionModal
+                isOpen={showAddTx}
+                onClose={() => setShowAddTx(false)}
+                onSuccess={() => {
+                  showToast('Transaction added successfully', 'success');
+                  loadData();
+                }}
+                assets={assets}
+                showToast={showToast}
+              />
+
+              <AddHoldingModal
+                isOpen={showAddHolding}
+                onClose={() => setShowAddHolding(false)}
+                onSuccess={() => {
+                  showToast('Holding added successfully', 'success');
+                  loadData();
+                }}
+                assets={assets}
+                showToast={showToast}
+              />
+
+              {/* Asset Chart Modal */}
+              <AssetChartModal
+                isOpen={!!selectedAssetForChart}
+                onClose={() => setSelectedAssetForChart(null)}
+                assetId={assets.find(a => a.symbol === selectedAssetForChart?.symbol)?.id || 0}
+                symbol={selectedAssetForChart?.symbol || ''}
+                name={selectedAssetForChart?.name || ''}
+                type={selectedAssetForChart?.type || ''}
+                currentPrice={selectedAssetForChart?.currentPrice}
+                avgCost={selectedAssetForChart?.avgCost}
+                quantity={selectedAssetForChart?.quantity}
+              />
             </div>
-            
-            {stalePrices && !priceRefreshing && (
-              <span className="price-stale-indicator" title="Prices may be outdated">
-                <AlertCircle size={16} />
-              </span>
-            )}
-            <button 
-              onClick={handleRefreshPrices} 
-              className="btn-icon"
-              disabled={priceRefreshing}
-              title={wsConnected ? 'Realtime active (WebSocket)' : 'Refresh prices from API'}
-            >
-              <RefreshCw size={18} className={priceRefreshing || wsConnected ? 'spin' : ''} />
-            </button>
-            <button 
-              onClick={() => loadData(true)} 
-              className="btn-icon"
-              disabled={refreshing}
-              title="Reload data"
-            >
-              <List size={18} className={refreshing ? 'spin' : ''} />
-            </button>
-            <div className="header-actions">
-              <button onClick={() => setShowAddTx(true)} className="btn-primary">
-                <Plus size={16} /> Quick Add
-              </button>
-            </div>
-          </div>
-        </header>
-
-        {/* Content */}
-        <div className="content">
-          {activeTab === 'dashboard' && (
-            <DashboardContent 
-              loading={loading}
-              summary={summary}
-              realtimeTotals={realtimeTotals}
-              dashboardData={dashboardData}
-              transactions={transactions}
-              wsConnected={wsConnected}
-              getRealtimePrice={getRealtimePrice}
-              setActiveTab={setActiveTab}
-              setShowAddHolding={setShowAddHolding}
-              setShowAddTx={setShowAddTx}
-            />
-          )}
-          {activeTab === 'holdings' && <HoldingsView />}
-          {activeTab === 'transactions' && <TransactionsView />}
-          {activeTab === 'assets' && <AssetsView />}
-        </div>
-      </main>
-
-      {/* Toasts */}
-      <ToastContainer toasts={toasts} removeToast={removeToast} />
-
-      {/* Modals */}
-      <AddAssetModal 
-        isOpen={showAddAsset} 
-        onClose={() => setShowAddAsset(false)} 
-        onSuccess={() => {
-          showToast('Asset added successfully', 'success');
-          loadData();
-        }}
-        showToast={showToast}
+          </ProtectedRoute>
+        }
       />
-      
-      <AddTransactionModal 
-        isOpen={showAddTx} 
-        onClose={() => setShowAddTx(false)} 
-        onSuccess={() => {
-          showToast('Transaction added successfully', 'success');
-          loadData();
-        }}
-        assets={assets}
-        showToast={showToast}
-      />
-      
-      <AddHoldingModal 
-        isOpen={showAddHolding} 
-        onClose={() => setShowAddHolding(false)} 
-        onSuccess={() => {
-          showToast('Holding added successfully', 'success');
-          loadData();
-        }}
-        assets={assets}
-        showToast={showToast}
-      />
-      
-      {/* Asset Chart Modal */}
-      <AssetChartModal
-        isOpen={!!selectedAssetForChart}
-        onClose={() => setSelectedAssetForChart(null)}
-        assetId={assets.find(a => a.symbol === selectedAssetForChart?.symbol)?.id || 0}
-        symbol={selectedAssetForChart?.symbol || ''}
-        name={selectedAssetForChart?.name || ''}
-        type={selectedAssetForChart?.type || ''}
-        currentPrice={selectedAssetForChart?.currentPrice}
-        avgCost={selectedAssetForChart?.avgCost}
-        quantity={selectedAssetForChart?.quantity}
-      />
-    </div>
+    </Routes>
   );
 }
 

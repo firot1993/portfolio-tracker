@@ -639,8 +639,8 @@ class RealtimePriceService {
         lastTimestamp: timestamp,
         started: true,
       });
-      // Record start of bucket
-      recordAssetPriceAt(assetId, price, bucketStart);
+      // Note: Price history recording requires user context - skipping in realtime service
+      // Users can use /history/asset/:id/price to record prices manually
       return;
     }
 
@@ -652,21 +652,16 @@ class RealtimePriceService {
       state.lastPrice = price;
       state.lastTimestamp = timestamp;
       if (!state.started) {
-        recordAssetPriceAt(assetId, price, bucketStart);
         state.started = true;
       }
       return;
     }
 
-    // Bucket advanced: record end of previous bucket, then start of new bucket
-    const prevBucketEnd = state.bucketStartMs + HISTORY_BUCKET_MS - 1;
-    recordAssetPriceAt(assetId, state.lastPrice, prevBucketEnd);
-
+    // Bucket advanced
     state.bucketStartMs = bucketStart;
     state.lastPrice = price;
     state.lastTimestamp = timestamp;
     state.started = true;
-    recordAssetPriceAt(assetId, price, bucketStart);
   }
 
   // ==================== Client Management ====================

@@ -1,31 +1,54 @@
 import express from 'express';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import { createServer } from 'http';
-import { initDB, getEnvInfo } from './db/index.js';
+import { initDB, getEnvInfo, runMigrations } from './db/index.js';
 import accountsRouter from './routes/accounts.js';
 import assetsRouter from './routes/assets.js';
 import transactionsRouter from './routes/transactions.js';
 import holdingsRouter from './routes/holdings.js';
 import portfolioRouter from './routes/portfolio.js';
 import historyRouter from './routes/history.js';
+import authRouter from './routes/auth.js';
 import { initWebSocketServer } from './routes/ws.js';
 import { realtimePriceService } from './services/realtimePriceService.js';
+import { authMiddleware } from './middleware/auth.js';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3001', 10);
 
-app.use(cors());
+// Enable CORS for all routes
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    // and requests from localhost or 127.0.0.1 on any port
+    const allowedOrigins = [
+      'http://localhost:5173',
+      'http://127.0.0.1:5173',
+      'http://localhost:3000',
+      'http://127.0.0.1:3000',
+    ];
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.warn('CORS blocked origin:', origin);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  exposedHeaders: ['Set-Cookie'],
+}));
+
+// Handle preflight requests for all routes
+app.options('*', cors());
+
 app.use(express.json());
+app.use(cookieParser());
 
-// Routes
-app.use('/api/accounts', accountsRouter);
-app.use('/api/assets', assetsRouter);
-app.use('/api/transactions', transactionsRouter);
-app.use('/api/holdings', holdingsRouter);
-app.use('/api/portfolio', portfolioRouter);
-app.use('/api/history', historyRouter);
-
-// Health check (including WebSocket status)
+// Public routes (no auth required)
+app.use('/api/auth', authRouter);
 app.get('/api/health', (req, res) => {
   const stats = realtimePriceService.getStats();
   res.json({ 
@@ -40,14 +63,24 @@ app.get('/api/health', (req, res) => {
     },
   });
 });
-
-// Realtime price service stats
 app.get('/api/realtime/stats', (req, res) => {
   res.json(realtimePriceService.getStats());
 });
 
+// Protected routes (auth required)
+app.use(authMiddleware);
+app.use('/api/accounts', accountsRouter);
+app.use('/api/assets', assetsRouter);
+app.use('/api/transactions', transactionsRouter);
+app.use('/api/holdings', holdingsRouter);
+app.use('/api/portfolio', portfolioRouter);
+app.use('/api/history', historyRouter);
+
 // Initialize DB then start server
 initDB().then(async () => {
+  // Run migrations to add users table and user_id columns
+  await runMigrations();
+
   const { env, dbPath } = getEnvInfo();
   
   // Create HTTP server
