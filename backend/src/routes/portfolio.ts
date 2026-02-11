@@ -193,7 +193,12 @@ router.get('/metrics', authMiddleware, async (req, res) => {
       },
     });
   } catch (error: any) {
-    res.status(400).json({ success: false, error: error.message });
+    const isInsufficientData = error.message?.includes('Insufficient data');
+    res.status(isInsufficientData ? 422 : 400).json({ 
+      success: false, 
+      error: error.message,
+      code: isInsufficientData ? 'INSUFFICIENT_DATA' : 'METRICS_ERROR'
+    });
   }
 });
 
@@ -207,7 +212,12 @@ router.get('/metrics/asset/:assetId', authMiddleware, async (req, res) => {
     const data = await getAssetMetrics(userId, Number(assetId), range, riskFreeRate);
     res.json({ success: true, data });
   } catch (error: any) {
-    res.status(400).json({ success: false, error: error.message });
+    const isInsufficientData = error.message?.includes('Insufficient data');
+    res.status(isInsufficientData ? 422 : 400).json({ 
+      success: false, 
+      error: error.message,
+      code: isInsufficientData ? 'INSUFFICIENT_DATA' : 'METRICS_ERROR'
+    });
   }
 });
 

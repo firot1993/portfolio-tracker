@@ -104,16 +104,24 @@ router.put('/:id', (req, res) => {
   const newThreshold = threshold ?? existing.threshold;
   const newIsActive = is_active !== undefined ? (is_active ? 1 : 0) : existing.is_active;
 
-  run(
-    `UPDATE alerts
-     SET threshold = ?, is_active = ?, updated_at = datetime('now')
-     WHERE id = ? AND user_id = ?`,
-    [newThreshold, newIsActive, Number(id), userId]
-  );
-  saveDB();
+  try {
+    run(
+      `UPDATE alerts
+       SET threshold = ?, is_active = ?, updated_at = datetime('now')
+       WHERE id = ? AND user_id = ?`,
+      [newThreshold, newIsActive, Number(id), userId]
+    );
+    saveDB();
 
-  const updated = query('SELECT * FROM alerts WHERE id = ?', [Number(id)])[0] as any;
-  res.json({ success: true, alert: updated });
+    const updated = query('SELECT * FROM alerts WHERE id = ?', [Number(id)])[0] as any;
+    res.json({ success: true, alert: updated });
+  } catch (error: any) {
+    if (error.message?.includes('UNIQUE')) {
+      return res.status(409).json({ success: false, error: 'Duplicate alert already exists' });
+    }
+    console.error('Error updating alert:', error);
+    res.status(500).json({ success: false, error: 'Failed to update alert' });
+  }
 });
 
 router.delete('/:id', (req, res) => {

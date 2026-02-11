@@ -96,7 +96,10 @@ initDB().then(async () => {
   realtimePriceService.start();
 
   // Alert checker job (every 5 minutes)
+  let isCheckingAlerts = false;
   setInterval(async () => {
+    if (isCheckingAlerts) return;
+    isCheckingAlerts = true;
     try {
       const triggered = await checkAlerts();
       if (triggered > 0) {
@@ -104,6 +107,8 @@ initDB().then(async () => {
       }
     } catch (error) {
       console.error('Alert checker error:', error);
+    } finally {
+      isCheckingAlerts = false;
     }
   }, 5 * 60 * 1000);
 

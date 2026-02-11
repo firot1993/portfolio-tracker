@@ -36,7 +36,7 @@ export async function checkAlerts(): Promise<number> {
     const shouldTrigger = evaluateAlert(alert, currentPrice);
     if (!shouldTrigger) continue;
 
-    triggerAlert(alert.id, currentPrice);
+    triggerAlert(alert.id, alert.user_id, currentPrice);
     triggeredCount++;
   }
 
@@ -47,7 +47,7 @@ export async function checkAlerts(): Promise<number> {
   return triggeredCount;
 }
 
-export function triggerAlert(alertId: number, currentPrice: number): void {
+export function triggerAlert(alertId: number, userId: number, currentPrice: number): void {
   run(
     `UPDATE alerts
      SET triggered = 1, triggered_at = datetime('now'), updated_at = datetime('now')
@@ -55,8 +55,8 @@ export function triggerAlert(alertId: number, currentPrice: number): void {
     [alertId]
   );
   run(
-    'INSERT INTO alert_notifications (alert_id, triggered_price) VALUES (?, ?)',
-    [alertId, currentPrice]
+    'INSERT INTO alert_notifications (alert_id, user_id, triggered_price) VALUES (?, ?, ?)',
+    [alertId, userId, currentPrice]
   );
 }
 

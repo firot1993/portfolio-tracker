@@ -261,8 +261,9 @@ describe('Portfolio Tracker API with Authentication', () => {
       const agent = await createAuthenticatedAgent(app);
       const res = await agent.get('/api/portfolio/metrics?range=1M');
 
-      expect(res.status).toBe(400); // insufficient data in test DB
+      expect(res.status).toBe(422); // insufficient data in test DB
       expect(res.body.success).toBe(false);
+      expect(res.body.code).toBe('INSUFFICIENT_DATA');
     });
   });
 

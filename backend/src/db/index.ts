@@ -201,6 +201,7 @@ export async function initDB(inMemory = false): Promise<SqlJsDatabase> {
   db.run(`
     CREATE TABLE IF NOT EXISTS alert_notifications (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
       alert_id INTEGER REFERENCES alerts(id) ON DELETE CASCADE,
       triggered_price REAL NOT NULL,
       notified_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -403,6 +404,7 @@ export async function runMigrations(): Promise<void> {
     { name: 'idx_holdings_user', sql: 'CREATE INDEX IF NOT EXISTS idx_holdings_user ON holdings(user_id)' },
     { name: 'idx_alerts_user', sql: 'CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user_id)' },
     { name: 'idx_alerts_asset', sql: 'CREATE INDEX IF NOT EXISTS idx_alerts_asset ON alerts(asset_id)' },
+    { name: 'idx_alert_notifications_user', sql: 'CREATE INDEX IF NOT EXISTS idx_alert_notifications_user ON alert_notifications(user_id)' },
     { name: 'idx_alert_notifications_alert', sql: 'CREATE INDEX IF NOT EXISTS idx_alert_notifications_alert ON alert_notifications(alert_id)' },
   ];
 
