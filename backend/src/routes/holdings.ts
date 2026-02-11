@@ -1,35 +1,38 @@
 import { Router } from 'express';
 import { query, run, lastInsertId, saveDB } from '../db/index.js';
 import { getAssetPrice, getUSDCNYRate } from '../services/priceService.js';
+import { authMiddleware } from '../middleware/auth.js';
 
 const router = Router();
 
 // Get all holdings with current values
 // Query params:
 //   - includePrices: 'false' to skip price fetching (use cached prices)
-router.get('/', async (req, res) => {
+router.get('/', authMiddleware, async (req, res) => {
+  const userId = (req as any).user.id;
   const includePrices = req.query.includePrices !== 'false'; // default true
-  
+
   const holdings = query(`
     SELECT h.*, a.symbol, a.name, a.type, a.currency, a.current_price, a.price_updated_at, acc.name as account_name
     FROM holdings h
     JOIN assets a ON h.asset_id = a.id
     LEFT JOIN accounts acc ON h.account_id = acc.id
+    WHERE h.user_id = ?
     ORDER BY a.type, a.symbol
-  `);
-  
+  `, [userId]);
+
   const usdcny = await getUSDCNYRate() || 7.2;
-  
+
   const holdingsWithValue = await Promise.all(
     holdings.map(async (h: any) => {
       let currentPrice: number | null = null;
-      
+
       if (includePrices) {
         // Use cached price from database if available and fresh (< 5 minutes)
-        const priceAge = h.price_updated_at 
+        const priceAge = h.price_updated_at
           ? Date.now() - new Date(h.price_updated_at).getTime()
           : Infinity;
-        
+
         if (h.current_price !== null && priceAge < 5 * 60 * 1000) {
           currentPrice = h.current_price;
         } else {
@@ -46,17 +49,17 @@ router.get('/', async (req, res) => {
         // Just return cached price without fetching
         currentPrice = h.current_price;
       }
-      
+
       const currentValue = currentPrice ? currentPrice * h.quantity : null;
       const costBasis = h.avg_cost * h.quantity;
       const pnl = currentValue ? currentValue - costBasis : null;
       const pnlPercent = pnl && costBasis ? (pnl / costBasis) * 100 : null;
-      
+
       let valueUSD = currentValue;
       if (h.currency === 'CNY' && currentValue) {
         valueUSD = currentValue / usdcny;
       }
-      
+
       return {
         ...h,
         currentPrice,
@@ -68,35 +71,36 @@ router.get('/', async (req, res) => {
       };
     })
   );
-  
+
   // Save any price updates
   if (includePrices) {
     saveDB();
   }
-  
+
   res.json(holdingsWithValue);
 });
 
 // Get single holding detail
-router.get('/:assetId', async (req, res) => {
+router.get('/:assetId', authMiddleware, async (req, res) => {
+  const userId = (req as any).user.id;
   const { assetId } = req.params;
-  
+
   const holding = query(`
     SELECT h.*, a.symbol, a.name, a.type, a.currency, a.current_price, a.price_updated_at
     FROM holdings h
     JOIN assets a ON h.asset_id = a.id
-    WHERE h.asset_id = ?
-  `, [Number(assetId)])[0] as any;
-  
+    WHERE h.asset_id = ? AND h.user_id = ?
+  `, [Number(assetId), userId])[0] as any;
+
   if (!holding) {
     return res.status(404).json({ error: 'Holding not found' });
   }
-  
+
   // Use cached price if fresh, otherwise fetch new price
-  const priceAge = holding.price_updated_at 
+  const priceAge = holding.price_updated_at
     ? Date.now() - new Date(holding.price_updated_at).getTime()
     : Infinity;
-  
+
   let currentPrice = holding.current_price;
   if (currentPrice === null || priceAge > 5 * 60 * 1000) {
     currentPrice = await getAssetPrice(holding.symbol, holding.type);
@@ -108,16 +112,16 @@ router.get('/:assetId', async (req, res) => {
       saveDB();
     }
   }
-  
+
   const currentValue = currentPrice ? currentPrice * holding.quantity : null;
   const costBasis = holding.avg_cost * holding.quantity;
   const pnl = currentValue ? currentValue - costBasis : null;
-  
+
   const transactions = query(
-    'SELECT * FROM transactions WHERE asset_id = ? ORDER BY date DESC',
-    [Number(assetId)]
+    'SELECT * FROM transactions WHERE asset_id = ? AND user_id = ? ORDER BY date DESC',
+    [Number(assetId), userId]
   );
-  
+
   res.json({
     ...holding,
     currentPrice,
@@ -130,49 +134,59 @@ router.get('/:assetId', async (req, res) => {
 });
 
 // Add holding directly
-router.post('/', (req, res) => {
+router.post('/', authMiddleware, (req, res) => {
+  const userId = (req as any).user.id;
   const { asset_id, account_id, quantity, avg_cost } = req.body;
-  
+
   if (!asset_id || !quantity || !avg_cost) {
     return res.status(400).json({ error: 'Missing required fields: asset_id, quantity, avg_cost' });
   }
-  
+
   if (quantity <= 0) {
     return res.status(400).json({ error: 'Quantity must be greater than 0' });
   }
-  
+
   if (avg_cost < 0) {
     return res.status(400).json({ error: 'Average cost cannot be negative' });
   }
-  
+
+  // Verify asset belongs to user
+  const assetCheck = query(
+    'SELECT id FROM assets WHERE id = ? AND (user_id = ? OR user_id IS NULL)',
+    [asset_id, userId]
+  );
+  if (assetCheck.length === 0) {
+    return res.status(404).json({ error: 'Asset not found' });
+  }
+
   try {
     // Check if holding already exists
     const existing = query(
-      'SELECT * FROM holdings WHERE asset_id = ? AND (account_id = ? OR (account_id IS NULL AND ? IS NULL))',
-      [asset_id, account_id || null, account_id || null]
+      'SELECT * FROM holdings WHERE asset_id = ? AND (account_id = ? OR (account_id IS NULL AND ? IS NULL)) AND user_id = ?',
+      [asset_id, account_id || null, account_id || null, userId]
     )[0] as any;
-    
+
     if (existing) {
       // Update existing holding
       const newQty = existing.quantity + quantity;
       const newAvgCost = (existing.avg_cost * existing.quantity + avg_cost * quantity) / newQty;
       run(
         `UPDATE holdings SET quantity = ?, avg_cost = ?, updated_at = datetime('now')
-         WHERE id = ?`,
-        [newQty, newAvgCost, existing.id]
+         WHERE id = ? AND user_id = ?`,
+        [newQty, newAvgCost, existing.id, userId]
       );
       saveDB();
-      
+
       const updatedHolding = query('SELECT * FROM holdings WHERE id = ?', [existing.id])[0];
       res.json(updatedHolding);
     } else {
       // Create new holding
       run(
-        'INSERT INTO holdings (asset_id, account_id, quantity, avg_cost) VALUES (?, ?, ?, ?)',
-        [asset_id, account_id || null, quantity, avg_cost]
+        'INSERT INTO holdings (user_id, asset_id, account_id, quantity, avg_cost) VALUES (?, ?, ?, ?, ?)',
+        [userId, asset_id, account_id || null, quantity, avg_cost]
       );
       saveDB();
-      
+
       const id = lastInsertId();
       const newHolding = query('SELECT * FROM holdings WHERE id = ?', [id])[0];
       res.status(201).json(newHolding);

@@ -47,8 +47,16 @@ export async function initDB(inMemory = false): Promise<SqlJsDatabase> {
   
   // Initialize schema
   db.run(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE TABLE IF NOT EXISTS accounts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER REFERENCES users(id),
       name TEXT NOT NULL,
       type TEXT NOT NULL,
       currency TEXT DEFAULT 'USD',
@@ -57,17 +65,20 @@ export async function initDB(inMemory = false): Promise<SqlJsDatabase> {
 
     CREATE TABLE IF NOT EXISTS assets (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      symbol TEXT NOT NULL UNIQUE,
+      user_id INTEGER REFERENCES users(id),
+      symbol TEXT NOT NULL,
       name TEXT NOT NULL,
       type TEXT NOT NULL,
       exchange TEXT,
       currency TEXT DEFAULT 'USD',
       current_price REAL,
-      price_updated_at DATETIME
+      price_updated_at DATETIME,
+      UNIQUE(symbol)
     );
 
     CREATE TABLE IF NOT EXISTS transactions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER REFERENCES users(id),
       asset_id INTEGER REFERENCES assets(id),
       account_id INTEGER REFERENCES accounts(id),
       type TEXT NOT NULL,
@@ -81,16 +92,18 @@ export async function initDB(inMemory = false): Promise<SqlJsDatabase> {
 
     CREATE TABLE IF NOT EXISTS holdings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER REFERENCES users(id),
       asset_id INTEGER REFERENCES assets(id),
       account_id INTEGER REFERENCES accounts(id),
       quantity REAL NOT NULL,
       avg_cost REAL NOT NULL,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(asset_id, account_id)
+      UNIQUE(user_id, asset_id, account_id)
     );
 
     CREATE TABLE IF NOT EXISTS price_history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER REFERENCES users(id),
       asset_id INTEGER REFERENCES assets(id),
       price REAL NOT NULL,
       currency TEXT DEFAULT 'USD',
@@ -114,11 +127,13 @@ export async function initDB(inMemory = false): Promise<SqlJsDatabase> {
   db.run(`
     CREATE TABLE IF NOT EXISTS price_snapshots (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      snapshot_date DATE NOT NULL UNIQUE,
+      user_id INTEGER REFERENCES users(id),
+      snapshot_date DATE NOT NULL,
       total_value_usd REAL,
       total_cost_usd REAL,
       usdcny_rate REAL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(user_id, snapshot_date)
     )
   `);
 
@@ -126,12 +141,14 @@ export async function initDB(inMemory = false): Promise<SqlJsDatabase> {
   db.run(`
     CREATE TABLE IF NOT EXISTS collector_runs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER REFERENCES users(id),
       run_type TEXT NOT NULL,
       run_key TEXT NOT NULL,
       status TEXT NOT NULL,
       started_at DATETIME NOT NULL,
       finished_at DATETIME,
-      error_message TEXT
+      error_message TEXT,
+      UNIQUE(user_id, run_type, run_key)
     )
   `);
 
@@ -139,33 +156,16 @@ export async function initDB(inMemory = false): Promise<SqlJsDatabase> {
   db.run(`
     CREATE TABLE IF NOT EXISTS backfill_jobs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER REFERENCES users(id),
       asset_id INTEGER NOT NULL REFERENCES assets(id),
       range TEXT NOT NULL,
       status TEXT NOT NULL,
       requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       completed_at DATETIME,
-      error_message TEXT
+      error_message TEXT,
+      UNIQUE(user_id, asset_id, range)
     )
   `);
-
-  // Historical Performance Charts: Add indexes for better query performance
-  db.run(`CREATE INDEX IF NOT EXISTS idx_price_history_asset_date ON price_history(asset_id, timestamp)`);
-  try {
-    db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_price_history_unique ON price_history(asset_id, timestamp)`);
-  } catch {
-    // Existing duplicates may prevent unique index creation; keep non-unique index.
-  }
-  db.run(`CREATE INDEX IF NOT EXISTS idx_price_snapshots_date ON price_snapshots(snapshot_date)`);
-  db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_collector_runs_key ON collector_runs(run_type, run_key)`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_backfill_jobs_status ON backfill_jobs(status)`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_backfill_jobs_asset ON backfill_jobs(asset_id)`);
-  // Prevent duplicate queued backfill jobs for same asset and range
-  try {
-    db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_backfill_jobs_unique ON backfill_jobs(asset_id, range) WHERE status = 'queued'`);
-  } catch {
-    // Index may already exist or DB doesn't support partial indexes
-  }
-  db.run(`CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date)`);
 
   saveDB();
   return db;
@@ -233,4 +233,151 @@ export async function withTransaction<T>(fn: () => T): Promise<T> {
     rollbackTransaction();
     throw error;
   }
+}
+
+// Migration: Add users table and user_id columns
+export async function runMigrations(): Promise<void> {
+  // Create migrations tracking table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS migrations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  const hasMigration = (name: string) =>
+    query("SELECT id FROM migrations WHERE name = ?", [name]).length > 0;
+
+  const ensureDefaultUser = async (): Promise<number | null> => {
+    const existing = query<{ id: number }>("SELECT id FROM users WHERE email = 'default@portfolio.local'");
+    if (existing.length > 0) return existing[0].id;
+
+    const bcrypt = await import('bcrypt');
+    const defaultPasswordHash = await bcrypt.hash('default_password_change_me', 10);
+    db.run(
+      'INSERT OR IGNORE INTO users (email, password_hash) VALUES (?, ?)',
+      ['default@portfolio.local', defaultPasswordHash]
+    );
+    const created = query<{ id: number }>("SELECT id FROM users WHERE email = 'default@portfolio.local'");
+    return created[0]?.id || null;
+  };
+
+  const addUserIdColumn = async (tableName: string) => {
+    try {
+      const check = query(`PRAGMA table_info(${tableName})`);
+      const hasUserId = check.some((col: any) => col.name === 'user_id');
+      if (hasUserId) return;
+
+      db.run(`ALTER TABLE ${tableName} ADD COLUMN user_id INTEGER REFERENCES users(id)`);
+      db.run(`CREATE INDEX IF NOT EXISTS idx_${tableName}_user_id ON ${tableName}(user_id)`);
+
+      const countResult = query<{ count: number }>(`SELECT COUNT(*) as count FROM ${tableName}`);
+      const hasExistingData = countResult[0]?.count > 0;
+      if (hasExistingData) {
+        const defaultUserId = await ensureDefaultUser();
+        if (defaultUserId) {
+          db.run(`UPDATE ${tableName} SET user_id = ? WHERE user_id IS NULL`, [defaultUserId]);
+          console.log(`Assigned existing ${tableName} records to default user`);
+        }
+      }
+    } catch (error) {
+      console.error(`Error adding user_id to ${tableName}:`, error);
+    }
+  };
+
+  if (!hasMigration('001_add_users')) {
+    // Create users table
+    db.run(`
+      CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Add user_id columns to existing core tables
+    const coreTables = ['accounts', 'assets', 'transactions', 'holdings', 'price_history'];
+    for (const tableName of coreTables) {
+      await addUserIdColumn(tableName);
+    }
+
+    db.run("INSERT INTO migrations (name) VALUES ('001_add_users')");
+    console.log('Applied migration 001_add_users');
+  }
+
+  if (!hasMigration('002_add_user_id_history_tables')) {
+    const historyTables = ['price_snapshots', 'collector_runs', 'backfill_jobs'];
+    for (const tableName of historyTables) {
+      await addUserIdColumn(tableName);
+    }
+
+    db.run("INSERT INTO migrations (name) VALUES ('002_add_user_id_history_tables')");
+    console.log('Applied migration 002_add_user_id_history_tables');
+  }
+
+  if (!hasMigration('003_assets_global_only')) {
+    // Consolidate duplicate assets by symbol and make assets global-only.
+    const duplicates = query<{ symbol: string; keep_id: number; ids: string }>(
+      'SELECT symbol, MIN(id) as keep_id, GROUP_CONCAT(id) as ids FROM assets GROUP BY symbol HAVING COUNT(*) > 1'
+    );
+
+    for (const dup of duplicates) {
+      const ids = dup.ids.split(',').map(id => Number(id)).filter(id => Number.isFinite(id));
+      for (const id of ids) {
+        if (id === dup.keep_id) continue;
+        run('UPDATE holdings SET asset_id = ? WHERE asset_id = ?', [dup.keep_id, id]);
+        run('UPDATE transactions SET asset_id = ? WHERE asset_id = ?', [dup.keep_id, id]);
+        run('UPDATE backfill_jobs SET asset_id = ? WHERE asset_id = ?', [dup.keep_id, id]);
+        run('UPDATE price_history SET asset_id = ? WHERE asset_id = ?', [dup.keep_id, id]);
+        run('DELETE FROM assets WHERE id = ?', [id]);
+      }
+    }
+
+    // Make all assets global
+    run('UPDATE assets SET user_id = NULL');
+
+    // Enforce uniqueness by symbol for global assets
+    try {
+      db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_assets_symbol_unique ON assets(symbol)');
+    } catch (error) {
+      console.warn('Note: Could not create unique symbol index:', (error as Error).message);
+    }
+
+    db.run("INSERT INTO migrations (name) VALUES ('003_assets_global_only')");
+    console.log('Applied migration 003_assets_global_only');
+  }
+
+  // Historical Performance Charts: Add indexes for better query performance
+  // These are wrapped in try-catch to handle cases where columns might not exist yet
+  const indexes = [
+    { name: 'idx_price_history_asset_date', sql: 'CREATE INDEX IF NOT EXISTS idx_price_history_asset_date ON price_history(user_id, asset_id, timestamp)' },
+    { name: 'idx_price_snapshots_date', sql: 'CREATE INDEX IF NOT EXISTS idx_price_snapshots_date ON price_snapshots(user_id, snapshot_date)' },
+    { name: 'idx_collector_runs_key', sql: 'CREATE INDEX IF NOT EXISTS idx_collector_runs_key ON collector_runs(user_id, run_type, run_key)' },
+    { name: 'idx_backfill_jobs_status', sql: 'CREATE INDEX IF NOT EXISTS idx_backfill_jobs_status ON backfill_jobs(user_id, status)' },
+    { name: 'idx_backfill_jobs_asset', sql: 'CREATE INDEX IF NOT EXISTS idx_backfill_jobs_asset ON backfill_jobs(user_id, asset_id)' },
+    { name: 'idx_transactions_date', sql: 'CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(user_id, date)' },
+    { name: 'idx_accounts_user', sql: 'CREATE INDEX IF NOT EXISTS idx_accounts_user ON accounts(user_id)' },
+    { name: 'idx_assets_user', sql: 'CREATE INDEX IF NOT EXISTS idx_assets_user ON assets(user_id)' },
+    { name: 'idx_holdings_user', sql: 'CREATE INDEX IF NOT EXISTS idx_holdings_user ON holdings(user_id)' },
+  ];
+
+  for (const index of indexes) {
+    try {
+      db.run(index.sql);
+    } catch (error) {
+      // Index might already exist or column might not exist yet
+      console.warn(`Note: Could not create index ${index.name}:`, (error as Error).message);
+    }
+  }
+
+  try {
+    db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_assets_symbol_unique ON assets(symbol)');
+  } catch (error) {
+    console.warn('Note: Could not create unique symbol index:', (error as Error).message);
+  }
+
+  saveDB();
+  console.log('Database migrations completed');
 }

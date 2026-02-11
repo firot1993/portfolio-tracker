@@ -2,10 +2,12 @@ import { WebSocket } from 'ws';
 import axios from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { query, run, saveDB } from '../db/index.js';
+import { recordAssetPriceAt } from './priceHistoryService.js';
 
 // Configuration
 const MAX_CRYPTO_TICKS = 10;
 const MAX_STOCK_US_TICKS = 20;
+const HISTORY_BUCKET_MS = 15 * 60 * 1000;
 
 // Tiingo API key (should be loaded from env/config)
 const TIINGO_API_KEY = process.env.TIINGO_API_KEY || '';
@@ -34,6 +36,7 @@ class RealtimePriceService {
   private clients: Map<WebSocket, ClientConnection> = new Map();
   private trackedAssets: Map<number, TrackedAsset> = new Map();
   private currentPrices: Map<number, { price: number; timestamp: number }> = new Map();
+  private historyBuckets: Map<number, { bucketStartMs: number; lastPrice: number; lastTimestamp: number; started: boolean }> = new Map();
   
   // External data source connections
   private binanceWs: WebSocket | null = null;
@@ -465,7 +468,7 @@ class RealtimePriceService {
           eventName: 'subscribe',
           authorization: TIINGO_API_KEY,
           eventData: {
-            tickers: tickers,
+            tickers: tickers
           },
         };
         
@@ -527,29 +530,54 @@ class RealtimePriceService {
   }
 
   private handleTiingoMessage(message: any): void {
-    // Tiingo message format: { ticker: 'AAPL', bidPrice: 150.0, askPrice: 150.1, ... }
-    if (message.messageType === 'A' && message.data) {
-      const data = message.data;
-      const symbol = data.ticker as string;
-      
-      // Use lastPrice or midpoint of bid/ask
-      let price = data.lastPrice || data.bidPrice;
-      if (!price && data.bidPrice && data.askPrice) {
-        price = (data.bidPrice + data.askPrice) / 2;
-      }
-      
-      if (!price || isNaN(price)) return;
-      
-      // Find the asset
+    // Tiingo message formats:
+    // 1) IEX stream array: { messageType: 'A', data: [timestamp, ticker, price, ...] }
+    // 2) IEX stream batch: { messageType: 'A', data: [[timestamp, ticker, price, ...], ...] }
+    // 3) Object payload: { messageType: 'A', data: { ticker, lastPrice, bidPrice, askPrice, ... } }
+    // sample 1% message
+    if (!message || !message.messageType || !message.data) return;
+    if (message.messageType === 'H') return;
+    if (message.messageType !== 'A') return;
+
+    const processTick = (ts: unknown, ticker: unknown, lastPrice: unknown) => {
+      const symbol = typeof ticker === 'string' ? ticker : undefined;
+      const price = typeof lastPrice === 'number' ? lastPrice : undefined;
+      if (!symbol || typeof price !== 'number' || isNaN(price)) return;
+
       const asset = Array.from(this.trackedAssets.values()).find(
         a => a.type === 'stock_us' && a.normalizedSymbol === symbol.toUpperCase()
       );
-      
-      if (asset) {
-        const timestamp = Date.now();
-        this.updatePrice(asset.id, asset.symbol, price, timestamp);
+      if (!asset) return;
+
+      let timestampMs = Date.now();
+      if (typeof ts === 'string') {
+        const parsed = Date.parse(ts);
+        if (!Number.isNaN(parsed)) timestampMs = parsed;
       }
+
+      this.updatePrice(asset.id, asset.symbol, price, timestampMs);
+    };
+
+    if (Array.isArray(message.data)) {
+      if (Array.isArray(message.data[0])) {
+        for (const row of message.data) {
+          if (!Array.isArray(row)) continue;
+          processTick(row[0], row[1], row[2]);
+        }
+        return;
+      }
+      processTick(message.data[0], message.data[1], message.data[2]);
+      return;
     }
+
+    const data = message.data;
+    const symbol = typeof data.ticker === 'string' ? data.ticker : undefined;
+    let p = data.lastPrice || data.bidPrice;
+    if (!p && data.bidPrice && data.askPrice) {
+      p = (data.bidPrice + data.askPrice) / 2;
+    }
+    if (!symbol || typeof p !== 'number' || isNaN(p)) return;
+    processTick(data.timestamp, symbol, p);
   }
 
   // ==================== Price Update Logic ====================
@@ -559,6 +587,9 @@ class RealtimePriceService {
     
     // Persist to database (throttled to avoid too many writes)
     this.persistPrice(assetId, price, timestamp);
+
+    // Record history for crypto and US stocks at 15-minute bucket boundaries
+    this.recordBucketedHistory(assetId, price, timestamp);
     
     // Notify all callbacks (broadcast to clients)
     this.priceCallbacks.forEach(cb => cb(assetId, symbol, price, timestamp));
@@ -591,6 +622,46 @@ class RealtimePriceService {
     } catch (error) {
       console.error('[RealtimePrice] Failed to persist price:', error);
     }
+  }
+
+  private recordBucketedHistory(assetId: number, price: number, timestamp: number): void {
+    const asset = this.trackedAssets.get(assetId);
+    if (!asset || (asset.type !== 'crypto' && asset.type !== 'stock_us')) return;
+    if (!Number.isFinite(price) || price <= 0) return;
+
+    const bucketStart = Math.floor(timestamp / HISTORY_BUCKET_MS) * HISTORY_BUCKET_MS;
+    const state = this.historyBuckets.get(assetId);
+
+    if (!state) {
+      this.historyBuckets.set(assetId, {
+        bucketStartMs: bucketStart,
+        lastPrice: price,
+        lastTimestamp: timestamp,
+        started: true,
+      });
+      // Note: Price history recording requires user context - skipping in realtime service
+      // Users can use /history/asset/:id/price to record prices manually
+      return;
+    }
+
+    if (timestamp < state.lastTimestamp) {
+      return;
+    }
+
+    if (bucketStart === state.bucketStartMs) {
+      state.lastPrice = price;
+      state.lastTimestamp = timestamp;
+      if (!state.started) {
+        state.started = true;
+      }
+      return;
+    }
+
+    // Bucket advanced
+    state.bucketStartMs = bucketStart;
+    state.lastPrice = price;
+    state.lastTimestamp = timestamp;
+    state.started = true;
   }
 
   // ==================== Client Management ====================

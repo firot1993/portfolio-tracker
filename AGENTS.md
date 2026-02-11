@@ -10,7 +10,9 @@ Portfolio Tracker is a personal investment tracking application that monitors ho
 - **China A-Shares** (Shanghai, Shenzhen)
 - **Gold** (spot price, physical holdings)
 
-The application provides a unified dashboard with real-time price fetching, P&L tracking, transaction history, and multi-currency support (USD/CNY).
+The application provides a unified dashboard with real-time price fetching, P&L tracking, transaction history, multi-currency support (USD/CNY), and **multi-user authentication**.
+
+**Assets are global-only.** Users cannot create or delete assets unless they are configured as asset admins.
 
 ## Architecture
 
@@ -20,6 +22,8 @@ The application provides a unified dashboard with real-time price fetching, P&L 
 |-------|------------|
 | Frontend | React 19 + TypeScript + Vite |
 | Backend | Node.js + Express + TypeScript |
+| Authentication | JWT + httpOnly cookies |
+| Password Hashing | bcrypt |
 | Collector | Node.js + TypeScript (separate process) |
 | Database | SQLite (via sql.js) |
 | Charts | Recharts |
@@ -39,11 +43,16 @@ portfolio-tracker/
 │   │   ├── routes/               # API route handlers
 │   │   │   ├── accounts.ts
 │   │   │   ├── assets.ts
+│   │   │   ├── auth.ts           # Authentication endpoints
 │   │   │   ├── holdings.ts
+│   │   │   ├── history.ts        # /api/history endpoints
 │   │   │   ├── portfolio.ts
-│   │   │   └── transactions.ts
+│   │   │   ├── transactions.ts
+│   │   │   └── ws.ts             # WebSocket server (/ws/prices)
 │   │   ├── services/             # Business logic
-│   │   │   └── priceService.ts   # Price fetching with LRU cache
+│   │   │   ├── priceHistoryService.ts  # Historical price recording
+│   │   │   ├── priceService.ts   # Price fetching with LRU cache
+│   │   │   └── realtimePriceService.ts  # WebSocket price streams (Binance/Tiingo)
 │   │   ├── db/                   # Database layer
 │   │   │   └── index.ts          # SQLite initialization & helpers
 │   │   ├── utils/
@@ -69,6 +78,7 @@ portfolio-tracker/
 │   │   ├── services/
 │   │   │   └── api.ts            # Backend API client
 │   │   ├── types/
+│   │   │   ├── auth.ts           # Authentication types
 │   │   │   └── index.ts          # TypeScript interfaces
 │   │   ├── test/
 │   │   │   ├── setup.ts          # Test initialization
@@ -155,30 +165,40 @@ npm run e2e:ui  # Interactive UI mode
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | /api/health | Health check |
-| GET | /api/portfolio/summary | Portfolio overview with allocation |
-| GET | /api/holdings | All holdings with current values |
+| Method | Endpoint | Description | Auth Required |
+|--------|----------|-------------|---------------|
+| POST | /api/auth/register | Register new user | No |
+| POST | /api/auth/login | Login user | No |
+| POST | /api/auth/logout | Logout user | Yes |
+| GET | /api/auth/me | Get current user | Yes |
+| POST | /api/auth/change-password | Change password | Yes |
+| DELETE | /api/auth/account | Delete account | Yes |
+| GET | /api/health | Health check | No |
+| GET | /api/portfolio/summary | Portfolio overview with allocation | Yes |
+| GET | /api/holdings | All holdings with current values | Yes |
 | POST | /api/holdings | Create/update holding |
-| GET | /api/assets | List all assets (no prices by default) |
-| GET | /api/assets?includePrices=true | List assets with prices (slow) |
-| POST | /api/assets | Add new asset |
-| POST | /api/assets/seed | Seed default assets (manual) |
-| GET | /api/assets/:id/price | Get single asset price |
-| POST | /api/assets/prices/batch | Batch fetch prices (max 50) |
-| DELETE | /api/assets/:id | Delete asset by ID |
-| DELETE | /api/assets/by-symbol/:symbol | Delete asset by symbol |
-| DELETE | /api/assets/cleanup/all | Delete all assets (testing) |
-| DELETE | /api/assets/cleanup/test-data | Delete test assets only |
-| GET | /api/assets/search/:query | Search assets |
-| GET | /api/transactions | Transaction history |
-| POST | /api/transactions | Add transaction |
-| DELETE | /api/transactions/:id | Delete transaction |
-| GET | /api/accounts | List accounts |
-| POST | /api/accounts | Create account |
-| GET | /api/history/portfolio?range=1M | Portfolio value history (1D, 1W, 1M, 3M, 6M, 1Y, YTD, ALL) |
-| GET | /api/history/asset/:id?range=1M | Asset price history |
-| POST | /api/history/snapshot | Trigger collector run (daily snapshot + price history) |
-| GET | /api/history/range | Get available history date range |
+| GET | /api/assets | List all assets (no prices by default) | Yes |
+| GET | /api/assets?includePrices=true | List assets with prices (slow) | Yes |
+| POST | /api/assets | Add new asset | Yes (asset admin only) |
+| POST | /api/assets/seed | Seed default assets (manual) | Yes (asset admin only) |
+| GET | /api/assets/:id/price | Get single asset price | Yes |
+| POST | /api/assets/prices/batch | Batch fetch prices (max 50) | Yes |
+| DELETE | /api/assets/:id | Delete asset by ID | Yes (asset admin only) |
+| DELETE | /api/assets/by-symbol/:symbol | Delete asset by symbol | Yes (asset admin only) |
+| DELETE | /api/assets/cleanup/all | Delete all assets (testing) | Yes (asset admin only) |
+| DELETE | /api/assets/cleanup/test-data | Delete test assets only | Yes (asset admin only) |
+| GET | /api/assets/search/:query | Search assets | Yes |
+| GET | /api/transactions | Transaction history | Yes |
+| POST | /api/transactions | Add transaction | Yes |
+| DELETE | /api/transactions/:id | Delete transaction | Yes |
+| GET | /api/accounts | List accounts | Yes |
+| POST | /api/accounts | Create account | Yes |
+| GET | /api/history/portfolio?range=1M | Portfolio value history (1D, 1W, 1M, 3M, 6M, 1Y, YTD, ALL) | Yes |
+| GET | /api/history/asset/:id?range=1M | Asset price history | Yes |
+| POST | /api/history/snapshot | Trigger collector run (daily snapshot + price history) | Yes |
+| GET | /api/history/range | Get available history date range | Yes |
+| GET | /api/health | Health check with WebSocket status | No |
+| GET | /api/realtime/stats | Realtime price service statistics | Yes |
 
 ## Code Style Guidelines
 
@@ -282,11 +302,15 @@ The price service (`backend/src/services/priceService.ts`) fetches prices from:
 
 Core tables managed in `backend/src/db/index.ts`:
 
-- **accounts** - Investment accounts (exchange, broker, wallet, bank)
-- **assets** - Trackable assets (crypto, stock_us, stock_cn, gold)
-- **transactions** - Buy/sell/transfer records
-- **holdings** - Current positions with average cost
+- **users** - User accounts with bcrypt password hashes
+- **accounts** - Investment accounts (exchange, broker, wallet, bank), user-scoped
+- **assets** - Global asset catalog (crypto, stock_us, stock_cn, gold). Not user-scoped.
+- **transactions** - Buy/sell/transfer records, user-scoped
+- **holdings** - Current positions with average cost, user-scoped
 - **price_history** - Historical price snapshots
+- **price_snapshots** - Daily portfolio value snapshots
+- **collector_runs** - Collector run audit trail
+- **backfill_jobs** - Historical data backfill queue
 
 Database file location:
 - Default: `~/.portfolio-tracker/portfolio.dev.db` (development) or `portfolio.db` (production)
@@ -305,13 +329,37 @@ GitHub Actions workflow (`.github/workflows/ci.yml`):
 
 Coverage reports uploaded to Codecov with separate flags for frontend/backend.
 
+## Authentication
+
+The application supports multi-user accounts with JWT-based authentication:
+
+### Features
+- **Registration & Login**: Email/password with validation (email format, min 8 chars)
+- **JWT Tokens**: Signed with `JWT_SECRET`, stored in httpOnly cookies
+- **Password Security**: bcrypt hashing with salt rounds
+- **Session Duration**: 7 days (configurable via `JWT_EXPIRES_IN`)
+- **Protected Routes**: All data endpoints require authentication via `authMiddleware`
+- **User Data Isolation**: All data (accounts, assets, transactions, holdings) is scoped to the authenticated user via `user_id` foreign keys
+- **Account Management**: Change password, delete account with cascade data removal
+
+### Frontend Auth Types
+Located in `frontend/src/types/auth.ts`:
+- `User` - User profile (id, email, created_at, updated_at)
+- `LoginRequest` / `RegisterRequest` - Auth request payloads
+- `AuthResponse` - Auth response with user and optional message
+- `ChangePasswordRequest` - Password change payload
+- `AuthError` - Error response with optional field mapping
+- `AuthStatus` - UI state type for auth state management
+
 ## Security Considerations
 
-- No authentication implemented (personal/local use application)
-- CORS enabled for development
-- API timeouts set to 5s (price fetching) and 30s (general)
-- Input validation on all POST/PUT endpoints
-- SQL injection prevention via parameterized queries
+- **Authentication**: JWT-based auth with httpOnly cookies (not localStorage)
+- **Password Hashing**: bcrypt with appropriate salt rounds
+- **CORS**: Enabled for development
+- **API Timeouts**: 5s (price fetching), 30s (general)
+- **Input Validation**: All POST/PUT endpoints validate input
+- **SQL Injection Prevention**: Parameterized queries used throughout
+- **JWT Secret**: Must be changed in production via `JWT_SECRET` env var
 
 ## Environment Variables
 
@@ -319,9 +367,13 @@ Coverage reports uploaded to Codecov with separate flags for frontend/backend.
 - `NODE_ENV` - Environment (development, production, test)
 - `PORT` - API server port (default: 3001)
 - `DATABASE_PATH` - Custom database file path
+- `JWT_SECRET` - Secret key for JWT signing (**change in production**)
+- `JWT_EXPIRES_IN` - Token expiration (default: '7d')
+- `ASSET_ADMIN_EMAILS` - Comma-separated list of emails allowed to manage assets (create/seed/delete)
 
 ### Frontend
 - `VITE_*` - Standard Vite environment variables (if needed)
+- `VITE_ASSET_ADMIN_EMAILS` - Comma-separated list of emails allowed to see the Assets UI
 
 ## Useful Notes
 

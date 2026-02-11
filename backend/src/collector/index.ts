@@ -1,4 +1,4 @@
-import { initDB, getEnvInfo } from '../db/index.js';
+import { initDB, getEnvInfo, query } from '../db/index.js';
 import { runDailyCollector, runQueuedBackfills, cleanupOldData, getCollectorStats } from './collector.js';
 
 async function main() {
@@ -7,27 +7,31 @@ async function main() {
 
   console.log(`[Collector] Starting (env: ${env}, db: ${dbPath})`);
 
+  // Get the first user for backward compatibility
+  const users = query('SELECT id FROM users LIMIT 1');
+  const userId = users.length > 0 ? users[0].id : 1;
+
   const mode = process.argv[2] || 'daily';
 
   switch (mode) {
     case 'daily':
-      await runDailyCollector();
+      await runDailyCollector(userId);
       break;
     case 'backfills':
-      await runQueuedBackfills();
+      await runQueuedBackfills(userId);
       break;
     case 'all':
-      await runDailyCollector();
-      await runQueuedBackfills();
+      await runDailyCollector(userId);
+      await runQueuedBackfills(userId);
       break;
     case 'cleanup': {
       const days = parseInt(process.argv[3]) || 730; // Default 2 years
-      const result = await cleanupOldData(days);
+      const result = await cleanupOldData(userId, days);
       console.log(`[Collector] Cleanup result:`, result);
       break;
     }
     case 'stats': {
-      const stats = getCollectorStats();
+      const stats = getCollectorStats(userId);
       console.log('[Collector] Statistics:', JSON.stringify(stats, null, 2));
       break;
     }

@@ -1200,3 +1200,230 @@ button:disabled {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
 }
+
+/* Auth Pages */
+.auth-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-xl);
+  background: var(--bg);
+}
+
+.auth-container {
+  width: 100%;
+  max-width: 400px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  padding: var(--space-2xl);
+}
+
+.auth-header {
+  text-align: center;
+  margin-bottom: var(--space-xl);
+}
+
+.auth-header h1 {
+  font-size: 24px;
+  font-weight: 600;
+  margin-bottom: var(--space-sm);
+}
+
+.auth-header p {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.auth-error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid var(--negative);
+  border-radius: var(--radius-md);
+  color: var(--negative);
+  margin-bottom: var(--space-lg);
+  font-size: 14px;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+.input-with-icon {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.input-with-icon svg {
+  position: absolute;
+  left: 14px;
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+
+.input-with-icon input {
+  width: 100%;
+  padding: 12px 14px 12px 44px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font-size: 14px;
+  transition: border-color var(--transition-fast);
+}
+
+.input-with-icon input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.input-with-icon input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.input-with-icon input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.auth-btn {
+  width: 100%;
+  padding: 14px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  margin-top: var(--space-md);
+}
+
+.auth-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.auth-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.auth-footer {
+  text-align: center;
+  margin-top: var(--space-xl);
+  padding-top: var(--space-lg);
+  border-top: 1px solid var(--border);
+}
+
+.auth-footer p {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.auth-footer a {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.auth-footer a:hover {
+  text-decoration: underline;
+}
+
+/* Loading Screen */
+.loading-screen {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-md);
+  background: var(--bg);
+}
+
+.loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+.loading-screen p {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+/* User Menu */
+.user-menu {
+  position: relative;
+}
+
+.user-email {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.user-email:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-hover);
+}
+
+.user-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: var(--space-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  min-width: 180px;
+  overflow: hidden;
+  z-index: 100;
+}
+
+.user-dropdown-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: 12px var(--space-md);
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  text-align: left;
+}
+
+.user-dropdown-item:hover {
+  background: var(--surface-hover);
+}
+
+.user-dropdown-item.danger {
+  color: var(--negative);
+}
+
+.user-dropdown-item.danger:hover {
+  background: var(--negative-light);
+}

@@ -17,83 +17,88 @@ vi.mock('../services/priceService.js', () => ({
   getUSDCNYRate: vi.fn().mockResolvedValue(7.2)
 }));
 
+// Test user ID constant
+const TEST_USER_ID = 1;
+
 describe('Price History Service', () => {
   beforeAll(async () => {
     await initDB(true);
+    // Create a test user
+    run('INSERT OR IGNORE INTO users (id, email, password_hash) VALUES (1, "test@portfolio.local", "hash")');
   });
 
   beforeEach(() => {
     // Clean up snapshots
-    run('DELETE FROM price_snapshots');
-    run('DELETE FROM price_history');
-    run('DELETE FROM transactions');
-    run('DELETE FROM holdings');
-    run('DELETE FROM assets');
+    run('DELETE FROM price_snapshots WHERE user_id = ?', [TEST_USER_ID]);
+    run('DELETE FROM price_history WHERE user_id = ?', [TEST_USER_ID]);
+    run('DELETE FROM transactions WHERE user_id = ?', [TEST_USER_ID]);
+    run('DELETE FROM holdings WHERE user_id = ?', [TEST_USER_ID]);
+    run('DELETE FROM assets WHERE user_id IS NULL OR user_id = ?', [TEST_USER_ID]);
   });
 
   describe('recordDailySnapshot', () => {
     it('should record a daily snapshot', async () => {
-      await recordDailySnapshot();
-      
-      const snapshots = query('SELECT * FROM price_snapshots');
+      await recordDailySnapshot(TEST_USER_ID);
+
+      const snapshots = query('SELECT * FROM price_snapshots WHERE user_id = ?', [TEST_USER_ID]);
       expect(snapshots.length).toBeGreaterThanOrEqual(0);
     });
 
     it('should skip if snapshot already exists for today', async () => {
       // First call
-      await recordDailySnapshot();
-      
+      await recordDailySnapshot(TEST_USER_ID);
+
       // Second call should skip
-      await recordDailySnapshot();
-      
-      const snapshots = query('SELECT * FROM price_snapshots');
+      await recordDailySnapshot(TEST_USER_ID);
+
+      const snapshots = query('SELECT * FROM price_snapshots WHERE user_id = ?', [TEST_USER_ID]);
       expect(snapshots.length).toBeLessThanOrEqual(1);
     });
   });
 
   describe('getPortfolioHistory', () => {
     it('should return portfolio history for 1M range', async () => {
-      const history = await getPortfolioHistory('1M');
+      const history = await getPortfolioHistory('1M', TEST_USER_ID);
       expect(Array.isArray(history)).toBe(true);
     });
 
     it('should return portfolio history for 1W range', async () => {
-      const history = await getPortfolioHistory('1W');
+      const history = await getPortfolioHistory('1W', TEST_USER_ID);
       expect(Array.isArray(history)).toBe(true);
     });
 
     it('should return portfolio history for 1D range', async () => {
-      const history = await getPortfolioHistory('1D');
+      const history = await getPortfolioHistory('1D', TEST_USER_ID);
       expect(Array.isArray(history)).toBe(true);
     });
 
     it('should return portfolio history for 3M range', async () => {
-      const history = await getPortfolioHistory('3M');
+      const history = await getPortfolioHistory('3M', TEST_USER_ID);
       expect(Array.isArray(history)).toBe(true);
     });
 
     it('should return portfolio history for 6M range', async () => {
-      const history = await getPortfolioHistory('6M');
+      const history = await getPortfolioHistory('6M', TEST_USER_ID);
       expect(Array.isArray(history)).toBe(true);
     });
 
     it('should return portfolio history for 1Y range', async () => {
-      const history = await getPortfolioHistory('1Y');
+      const history = await getPortfolioHistory('1Y', TEST_USER_ID);
       expect(Array.isArray(history)).toBe(true);
     });
 
     it('should return portfolio history for YTD range', async () => {
-      const history = await getPortfolioHistory('YTD');
+      const history = await getPortfolioHistory('YTD', TEST_USER_ID);
       expect(Array.isArray(history)).toBe(true);
     });
 
     it('should return portfolio history for ALL range', async () => {
-      const history = await getPortfolioHistory('ALL');
+      const history = await getPortfolioHistory('ALL', TEST_USER_ID);
       expect(Array.isArray(history)).toBe(true);
     });
 
     it('should default to 1M for unknown range', async () => {
-      const history = await getPortfolioHistory('UNKNOWN');
+      const history = await getPortfolioHistory('UNKNOWN', TEST_USER_ID);
       expect(Array.isArray(history)).toBe(true);
     });
 
@@ -102,15 +107,15 @@ describe('Price History Service', () => {
       const yesterday = new Date();
       yesterday.setDate(yesterday.getDate() - 1);
       const yesterdayStr = yesterday.toISOString().split('T')[0];
-      
+
       run(
-        'INSERT INTO price_snapshots (snapshot_date, total_value_usd, total_cost_usd, usdcny_rate) VALUES (?, ?, ?, ?)',
-        [yesterdayStr, 10000, 8000, 7.2]
+        'INSERT INTO price_snapshots (user_id, snapshot_date, total_value_usd, total_cost_usd, usdcny_rate) VALUES (?, ?, ?, ?, ?)',
+        [TEST_USER_ID, yesterdayStr, 10000, 8000, 7.2]
       );
 
-      const history = await getPortfolioHistory('1M');
+      const history = await getPortfolioHistory('1M', TEST_USER_ID);
       expect(history.length).toBeGreaterThan(0);
-      
+
       if (history.length > 0) {
         expect(history[0]).toHaveProperty('pnl');
         // P&L should be value - cost = 10000 - 8000 = 2000
@@ -122,23 +127,23 @@ describe('Price History Service', () => {
   describe('getAssetHistory', () => {
     it('should return asset price history', async () => {
       // Create test asset
-      run('INSERT INTO assets (symbol, name, type) VALUES (?, ?, ?)', ['TEST', 'Test Asset', 'crypto']);
-      const asset = query('SELECT id FROM assets WHERE symbol = ?', ['TEST'])[0] as { id: number };
-      
+      run('INSERT INTO assets (user_id, symbol, name, type) VALUES (?, ?, ?, ?)', [TEST_USER_ID, 'TEST', 'Test Asset', 'crypto']);
+      const asset = query('SELECT id FROM assets WHERE symbol = ? AND user_id = ?', ['TEST', TEST_USER_ID])[0] as { id: number };
+
       // Record some prices
-      recordAssetPrice(asset.id, 100);
-      recordAssetPrice(asset.id, 110);
-      
-      const history = await getAssetHistory(asset.id, '1M');
+      recordAssetPrice(asset.id, 100, TEST_USER_ID);
+      recordAssetPrice(asset.id, 110, TEST_USER_ID);
+
+      const history = await getAssetHistory(asset.id, '1M', TEST_USER_ID);
       expect(Array.isArray(history)).toBe(true);
     });
 
     it('should return empty array for asset with no history', async () => {
       // Create test asset without history
-      run('INSERT INTO assets (symbol, name, type) VALUES (?, ?, ?)', ['TESTNOHIST', 'Test No History', 'crypto']);
-      const asset = query('SELECT id FROM assets WHERE symbol = ?', ['TESTNOHIST'])[0] as { id: number };
-      
-      const history = await getAssetHistory(asset.id, '1M');
+      run('INSERT INTO assets (user_id, symbol, name, type) VALUES (?, ?, ?, ?)', [TEST_USER_ID, 'TESTNOHIST', 'Test No History', 'crypto']);
+      const asset = query('SELECT id FROM assets WHERE symbol = ? AND user_id = ?', ['TESTNOHIST', TEST_USER_ID])[0] as { id: number };
+
+      const history = await getAssetHistory(asset.id, '1M', TEST_USER_ID);
       expect(Array.isArray(history)).toBe(true);
       expect(history.length).toBe(0);
     });
@@ -147,12 +152,12 @@ describe('Price History Service', () => {
   describe('recordAssetPrice', () => {
     it.skip('should record asset price', () => {
       // Create test asset
-      run('INSERT INTO assets (symbol, name, type) VALUES (?, ?, ?)', ['TESTREC', 'Test Record', 'crypto']);
-      const asset = query('SELECT id FROM assets WHERE symbol = ?', ['TESTREC'])[0] as { id: number };
-      
-      recordAssetPrice(asset.id, 150.5);
-      
-      const history = query('SELECT * FROM price_history WHERE asset_id = ?', [asset.id]);
+      run('INSERT INTO assets (user_id, symbol, name, type) VALUES (?, ?, ?, ?)', [TEST_USER_ID, 'TESTREC', 'Test Record', 'crypto']);
+      const asset = query('SELECT id FROM assets WHERE symbol = ? AND user_id = ?', ['TESTREC', TEST_USER_ID])[0] as { id: number };
+
+      recordAssetPrice(asset.id, 150.5, TEST_USER_ID);
+
+      const history = query('SELECT * FROM price_history WHERE asset_id = ? AND user_id = ?', [asset.id, TEST_USER_ID]);
       expect(history.length).toBe(1);
       expect((history[0] as any).price).toBe(150.5);
     });
@@ -160,7 +165,7 @@ describe('Price History Service', () => {
 
   describe('getAvailableHistoryRange', () => {
     it('should return null range when no snapshots exist', () => {
-      const range = getAvailableHistoryRange();
+      const range = getAvailableHistoryRange(TEST_USER_ID);
       expect(range).toHaveProperty('earliest');
       expect(range).toHaveProperty('latest');
     });
@@ -168,11 +173,11 @@ describe('Price History Service', () => {
     it('should return date range when snapshots exist', () => {
       const today = new Date().toISOString().split('T')[0];
       run(
-        'INSERT INTO price_snapshots (snapshot_date, total_value_usd, total_cost_usd, usdcny_rate) VALUES (?, ?, ?, ?)',
-        [today, 10000, 8000, 7.2]
+        'INSERT INTO price_snapshots (user_id, snapshot_date, total_value_usd, total_cost_usd, usdcny_rate) VALUES (?, ?, ?, ?, ?)',
+        [TEST_USER_ID, today, 10000, 8000, 7.2]
       );
-      
-      const range = getAvailableHistoryRange();
+
+      const range = getAvailableHistoryRange(TEST_USER_ID);
       expect(range).toHaveProperty('earliest');
       expect(range).toHaveProperty('latest');
       expect(range.earliest).toBe(today);
@@ -185,15 +190,15 @@ describe('Price History Service', () => {
       const oldDate = new Date();
       oldDate.setFullYear(oldDate.getFullYear() - 10);
       const oldDateStr = oldDate.toISOString().split('T')[0];
-      
+
       run(
-        'INSERT INTO price_snapshots (snapshot_date, total_value_usd, total_cost_usd, usdcny_rate) VALUES (?, ?, ?, ?)',
-        [oldDateStr, 10000, 8000, 7.2]
+        'INSERT INTO price_snapshots (user_id, snapshot_date, total_value_usd, total_cost_usd, usdcny_rate) VALUES (?, ?, ?, ?, ?)',
+        [TEST_USER_ID, oldDateStr, 10000, 8000, 7.2]
       );
-      
+
       cleanupOldSnapshots(365); // Keep 1 year
-      
-      const remaining = query('SELECT * FROM price_snapshots WHERE snapshot_date = ?', [oldDateStr]);
+
+      const remaining = query('SELECT * FROM price_snapshots WHERE snapshot_date = ? AND user_id = ?', [oldDateStr, TEST_USER_ID]);
       expect(remaining.length).toBe(0);
     });
   });
