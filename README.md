@@ -35,6 +35,9 @@ UI runs at http://localhost:5173
 - 💰 Track holdings across multiple asset classes
 - 📈 Real-time price fetching (CoinGecko, Yahoo Finance, Sina)
 - 🗓️ Historical performance charts (via collector)
+- 🧮 Advanced portfolio metrics (Sharpe, Sortino, max drawdown, CAGR)
+- ⚖️ Rebalancing suggestions with target allocation preferences
+- 🔔 Price alerts with threshold triggers
 - 💱 USD/CNY currency conversion
 - 📝 Transaction history with P&L tracking
 
@@ -57,6 +60,16 @@ This keeps history collection reliable and decoupled from API traffic.
 | Endpoint | Description |
 |----------|-------------|
 | GET /api/portfolio/summary | Portfolio overview with allocation |
+| GET /api/portfolio/rebalance-suggestions | Rebalancing recommendations |
+| GET /api/portfolio/metrics | Advanced portfolio metrics |
+| GET /api/portfolio/metrics/asset/:id | Asset-specific metrics |
+| GET /api/portfolio/user/preferences | Get target allocation preferences |
+| POST /api/portfolio/user/preferences | Update target allocation preferences |
+| POST /api/alerts | Create price alert |
+| GET /api/alerts | List price alerts |
+| PUT /api/alerts/:id | Update price alert |
+| DELETE /api/alerts/:id | Delete price alert |
+| GET /api/alerts/:id/history | Alert trigger history |
 | GET /api/holdings | All holdings with current values |
 | GET /api/assets | List tracked assets |
 | POST /api/assets | Add new asset |

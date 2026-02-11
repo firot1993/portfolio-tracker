@@ -10,6 +10,7 @@ import portfolioRouter from '../routes/portfolio.js';
 import accountsRouter from '../routes/accounts.js';
 import historyRouter from '../routes/history.js';
 import authRouter from '../routes/auth.js';
+import alertsRouter from '../routes/alerts.js';
 import { authMiddleware } from '../middleware/auth.js';
 
 // Helper function to create authenticated test agent
@@ -77,6 +78,7 @@ function createApp() {
   app.use('/api/portfolio', portfolioRouter);
   app.use('/api/accounts', accountsRouter);
   app.use('/api/history', historyRouter);
+  app.use('/api/alerts', alertsRouter);
 
   return app;
 }
@@ -244,6 +246,49 @@ describe('Portfolio Tracker API with Authentication', () => {
       expect(res.status).toBe(200);
       expect(res.body).toHaveProperty('totalValueUSD');
       expect(res.body).toHaveProperty('allocation');
+    });
+
+    it('should return rebalancing suggestions when authenticated', async () => {
+      const agent = await createAuthenticatedAgent(app);
+      const res = await agent.get('/api/portfolio/rebalance-suggestions');
+
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveProperty('currentAllocation');
+      expect(res.body).toHaveProperty('targetAllocation');
+    });
+
+    it('should return portfolio metrics with valid range', async () => {
+      const agent = await createAuthenticatedAgent(app);
+      const res = await agent.get('/api/portfolio/metrics?range=1M');
+
+      expect(res.status).toBe(400); // insufficient data in test DB
+      expect(res.body.success).toBe(false);
+    });
+  });
+
+  describe('Protected Alerts Endpoints', () => {
+    it('should create and list alerts when authenticated', async () => {
+      const { getDB, lastInsertId } = await import('../db/index.js');
+      const db = getDB();
+
+      const agent = await createAuthenticatedAgent(app);
+
+      db.run(
+        'INSERT INTO assets (user_id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?)',
+        [null, 'TESTALERT', 'Test Alert Asset', 'crypto', 'USD']
+      );
+      const assetId = lastInsertId();
+
+      const createRes = await agent
+        .post('/api/alerts')
+        .send({ asset_id: assetId, alert_type: 'above', threshold: 50000, is_active: true });
+
+      expect(createRes.status).toBe(201);
+      expect(createRes.body.alert.asset_symbol).toBe('TESTALERT');
+
+      const listRes = await agent.get('/api/alerts');
+      expect(listRes.status).toBe(200);
+      expect(Array.isArray(listRes.body.alerts)).toBe(true);
     });
   });
 

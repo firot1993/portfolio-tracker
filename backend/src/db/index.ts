@@ -167,6 +167,46 @@ export async function initDB(inMemory = false): Promise<SqlJsDatabase> {
     )
   `);
 
+  // Phase 1: User preferences for rebalancing
+  db.run(`
+    CREATE TABLE IF NOT EXISTS user_preferences (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+      target_allocation_crypto REAL DEFAULT 0.4,
+      target_allocation_stock_us REAL DEFAULT 0.3,
+      target_allocation_stock_cn REAL DEFAULT 0.2,
+      target_allocation_gold REAL DEFAULT 0.1,
+      rebalance_threshold REAL DEFAULT 0.05,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Phase 1: Price alerts
+  db.run(`
+    CREATE TABLE IF NOT EXISTS alerts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      asset_id INTEGER REFERENCES assets(id),
+      alert_type TEXT NOT NULL,
+      threshold REAL NOT NULL,
+      is_active BOOLEAN DEFAULT 1,
+      triggered BOOLEAN DEFAULT 0,
+      triggered_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(user_id, asset_id, alert_type, threshold)
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS alert_notifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      alert_id INTEGER REFERENCES alerts(id) ON DELETE CASCADE,
+      triggered_price REAL NOT NULL,
+      notified_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   saveDB();
   return db;
 }
@@ -361,6 +401,9 @@ export async function runMigrations(): Promise<void> {
     { name: 'idx_accounts_user', sql: 'CREATE INDEX IF NOT EXISTS idx_accounts_user ON accounts(user_id)' },
     { name: 'idx_assets_user', sql: 'CREATE INDEX IF NOT EXISTS idx_assets_user ON assets(user_id)' },
     { name: 'idx_holdings_user', sql: 'CREATE INDEX IF NOT EXISTS idx_holdings_user ON holdings(user_id)' },
+    { name: 'idx_alerts_user', sql: 'CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user_id)' },
+    { name: 'idx_alerts_asset', sql: 'CREATE INDEX IF NOT EXISTS idx_alerts_asset ON alerts(asset_id)' },
+    { name: 'idx_alert_notifications_alert', sql: 'CREATE INDEX IF NOT EXISTS idx_alert_notifications_alert ON alert_notifications(alert_id)' },
   ];
 
   for (const index of indexes) {

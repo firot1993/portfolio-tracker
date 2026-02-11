@@ -2,6 +2,12 @@ import { Router } from 'express';
 import { query, run, saveDB } from '../db/index.js';
 import { getAssetPrice, getUSDCNYRate } from '../services/priceService.js';
 import { authMiddleware } from '../middleware/auth.js';
+import {
+  calculateRebalancingSuggestions,
+  getUserPreferences,
+  upsertUserPreferences
+} from '../services/rebalancingService.js';
+import { getPortfolioMetrics, getAssetMetrics } from '../services/metricsService.js';
 
 const router = Router();
 
@@ -157,6 +163,99 @@ router.post('/refresh-prices', authMiddleware, async (req, res) => {
     failed: results.filter(r => r.price === null).length,
     results,
   });
+});
+
+router.get('/rebalance-suggestions', authMiddleware, async (req, res) => {
+  const userId = (req as any).user.id;
+  const threshold = req.query.threshold ? Number(req.query.threshold) : undefined;
+
+  if (threshold !== undefined && (Number.isNaN(threshold) || threshold < 0 || threshold > 1)) {
+    return res.status(400).json({ error: 'Threshold must be between 0 and 1' });
+  }
+
+  const result = await calculateRebalancingSuggestions(userId, threshold);
+  res.json(result);
+});
+
+router.get('/metrics', authMiddleware, async (req, res) => {
+  const userId = (req as any).user.id;
+  const range = (req.query.range as string) || '1M';
+  const riskFreeRate = req.query.riskFreeRate ? Number(req.query.riskFreeRate) : 0.04;
+
+  try {
+    const data = await getPortfolioMetrics(userId, range, riskFreeRate);
+    res.json({
+      success: true,
+      data,
+      meta: {
+        range,
+        dataPoints: data ? 1 : 0,
+      },
+    });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/metrics/asset/:assetId', authMiddleware, async (req, res) => {
+  const userId = (req as any).user.id;
+  const { assetId } = req.params;
+  const range = (req.query.range as string) || '1M';
+  const riskFreeRate = req.query.riskFreeRate ? Number(req.query.riskFreeRate) : 0.04;
+
+  try {
+    const data = await getAssetMetrics(userId, Number(assetId), range, riskFreeRate);
+    res.json({ success: true, data });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/user/preferences', authMiddleware, (req, res) => {
+  const userId = (req as any).user.id;
+  const prefs = getUserPreferences(userId);
+  res.json({ success: true, preferences: prefs });
+});
+
+router.post('/user/preferences', authMiddleware, (req, res) => {
+  const userId = (req as any).user.id;
+  const {
+    target_allocation_crypto,
+    target_allocation_stock_us,
+    target_allocation_stock_cn,
+    target_allocation_gold,
+    rebalance_threshold,
+  } = req.body;
+
+  const allocationValues = [
+    target_allocation_crypto,
+    target_allocation_stock_us,
+    target_allocation_stock_cn,
+    target_allocation_gold,
+  ];
+
+  if (allocationValues.some((value) => value === undefined || value < 0)) {
+    return res.status(400).json({ success: false, error: 'Allocations must be >= 0' });
+  }
+
+  const sum = allocationValues.reduce((acc, value) => acc + value, 0);
+  if (Math.abs(sum - 1) > 0.001) {
+    return res.status(400).json({ success: false, error: 'Allocations must sum to 1.0' });
+  }
+
+  if (rebalance_threshold !== undefined && (rebalance_threshold < 0 || rebalance_threshold > 1)) {
+    return res.status(400).json({ success: false, error: 'Threshold must be between 0 and 1' });
+  }
+
+  const preferences = upsertUserPreferences(userId, {
+    crypto: target_allocation_crypto,
+    stock_us: target_allocation_stock_us,
+    stock_cn: target_allocation_stock_cn,
+    gold: target_allocation_gold,
+    rebalance_threshold,
+  });
+
+  res.json({ success: true, preferences });
 });
 
 export default router;

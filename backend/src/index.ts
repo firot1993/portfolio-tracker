@@ -9,10 +9,12 @@ import transactionsRouter from './routes/transactions.js';
 import holdingsRouter from './routes/holdings.js';
 import portfolioRouter from './routes/portfolio.js';
 import historyRouter from './routes/history.js';
+import alertsRouter from './routes/alerts.js';
 import authRouter from './routes/auth.js';
 import { initWebSocketServer } from './routes/ws.js';
 import { realtimePriceService } from './services/realtimePriceService.js';
 import { authMiddleware } from './middleware/auth.js';
+import { checkAlerts, resetTriggeredAlerts } from './services/alertService.js';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3001', 10);
@@ -75,6 +77,7 @@ app.use('/api/transactions', transactionsRouter);
 app.use('/api/holdings', holdingsRouter);
 app.use('/api/portfolio', portfolioRouter);
 app.use('/api/history', historyRouter);
+app.use('/api/alerts', alertsRouter);
 
 // Initialize DB then start server
 initDB().then(async () => {
@@ -91,6 +94,30 @@ initDB().then(async () => {
   
   // Start realtime price service
   realtimePriceService.start();
+
+  // Alert checker job (every 5 minutes)
+  setInterval(async () => {
+    try {
+      const triggered = await checkAlerts();
+      if (triggered > 0) {
+        console.log(`Alert checker: triggered ${triggered} alerts`);
+      }
+    } catch (error) {
+      console.error('Alert checker error:', error);
+    }
+  }, 5 * 60 * 1000);
+
+  // Reset triggered alerts once per day
+  setInterval(() => {
+    try {
+      const resetCount = resetTriggeredAlerts();
+      if (resetCount > 0) {
+        console.log(`Alert reset: cleared ${resetCount} alerts`);
+      }
+    } catch (error) {
+      console.error('Alert reset error:', error);
+    }
+  }, 24 * 60 * 60 * 1000);
   
   // Bind to 0.0.0.0 to accept connections from any interface
   server.listen(PORT, '0.0.0.0', () => {
