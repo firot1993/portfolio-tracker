@@ -23,6 +23,9 @@ import Register from './pages/Register';
 import './App.css';
 import PerformanceChart from './components/PerformanceChart';
 import AssetChartModal from './components/AssetChartModal';
+import RebalancingWidget from './components/RebalancingWidget';
+import MetricsPanel from './components/MetricsPanel';
+import AlertManager from './components/AlertManager';
 
 const COLORS: Record<string, string> = {
   crypto: '#F7931A',
@@ -107,6 +110,7 @@ interface DashboardContentProps {
   setActiveTab: (tab: string) => void;
   setShowAddHolding: (show: boolean) => void;
   setShowAddTx: (show: boolean) => void;
+  assets: Asset[];
 }
 
 const AllocationCard = React.memo(function AllocationCard({
@@ -174,6 +178,7 @@ const DashboardContent = React.memo(function DashboardContent({
   setActiveTab,
   setShowAddHolding,
   setShowAddTx,
+  assets,
 }: DashboardContentProps) {
   return (
     <>
@@ -221,6 +226,10 @@ const DashboardContent = React.memo(function DashboardContent({
       {/* Performance Chart */}
       <div className="dashboard-full-width">
         <PerformanceChart />
+      </div>
+
+      <div className="dashboard-full-width">
+        <MetricsPanel />
       </div>
 
       {/* Main Content */}
@@ -282,6 +291,14 @@ const DashboardContent = React.memo(function DashboardContent({
             )}
           </div>
         </div>
+      </div>
+
+      <div className="dashboard-full-width">
+        <RebalancingWidget />
+      </div>
+
+      <div className="dashboard-full-width">
+        <AlertManager assets={assets} />
       </div>
 
       {/* Recent Transactions */}
@@ -1218,6 +1235,7 @@ function App() {
                       setActiveTab={setActiveTab}
                       setShowAddHolding={setShowAddHolding}
                       setShowAddTx={setShowAddTx}
+                      assets={assets}
                     />
                   )}
                   {activeTab === 'holdings' && <HoldingsView />}

@@ -174,4 +174,72 @@ export const runBackfills = () =>
 export const getHistoryRange = () =>
   api.get<{ earliest: string | null; latest: string | null }>('/history/range').then(r => r.data);
 
+// Rebalancing
+export interface UserPreferences {
+  id?: number;
+  user_id: number;
+  crypto: number;
+  stock_us: number;
+  stock_cn: number;
+  gold: number;
+  rebalance_threshold: number;
+  updated_at?: string;
+}
+
+export const getUserPreferences = () =>
+  api.get<{ success: boolean; preferences: UserPreferences }>('/portfolio/user/preferences').then(r => r.data);
+
+export const setUserPreferences = (data: {
+  target_allocation_crypto: number;
+  target_allocation_stock_us: number;
+  target_allocation_stock_cn: number;
+  target_allocation_gold: number;
+  rebalance_threshold: number;
+}) => api.post<{ success: boolean; preferences: UserPreferences }>('/portfolio/user/preferences', data).then(r => r.data);
+
+export const getRebalanceSuggestions = (threshold?: number) =>
+  api.get('/portfolio/rebalance-suggestions', { params: { threshold } }).then(r => r.data);
+
+// Metrics
+export const getPortfolioMetrics = (range: string, riskFreeRate?: number) =>
+  api.get('/portfolio/metrics', { params: { range, riskFreeRate } }).then(r => r.data);
+
+export const getAssetMetrics = (assetId: number, range: string, riskFreeRate?: number) =>
+  api.get(`/portfolio/metrics/asset/${assetId}`, { params: { range, riskFreeRate } }).then(r => r.data);
+
+// Alerts
+export interface AlertRecord {
+  id: number;
+  user_id: number;
+  asset_id: number;
+  asset_symbol: string;
+  asset_name?: string;
+  alert_type: 'above' | 'below' | 'change_percent';
+  threshold: number;
+  is_active: number;
+  triggered: number;
+  triggered_at?: string | null;
+  current_price?: number | null;
+  created_at?: string;
+}
+
+export const createAlert = (data: {
+  asset_id: number;
+  alert_type: 'above' | 'below' | 'change_percent';
+  threshold: number;
+  is_active: boolean;
+}) => api.post<{ success: boolean; alert: AlertRecord }>('/alerts', data).then(r => r.data);
+
+export const getAlerts = (params?: { is_active?: boolean; asset_id?: number }) =>
+  api.get<{ success: boolean; alerts: AlertRecord[] }>('/alerts', { params }).then(r => r.data);
+
+export const updateAlert = (id: number, data: { threshold?: number; is_active?: boolean }) =>
+  api.put<{ success: boolean; alert: AlertRecord }>(`/alerts/${id}`, data).then(r => r.data);
+
+export const deleteAlert = (id: number) =>
+  api.delete<{ success: boolean; message: string }>(`/alerts/${id}`).then(r => r.data);
+
+export const getAlertHistory = (id: number) =>
+  api.get<{ success: boolean; alert: AlertRecord; history: Array<{ id: number; triggered_price: number; notified_at: string }> }>(`/alerts/${id}/history`).then(r => r.data);
+
 export type { AxiosError };

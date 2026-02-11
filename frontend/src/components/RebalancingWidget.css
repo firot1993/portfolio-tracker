@@ -1,0 +1,127 @@
+.rebalancing-widget {
+  background: #121212;
+  border: 1px solid #1f1f1f;
+  border-radius: 12px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.rebalancing-widget .widget-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.rebalancing-widget .widget-error {
+  color: #ff6b6b;
+  background: rgba(255, 107, 107, 0.1);
+  padding: 8px 12px;
+  border-radius: 8px;
+}
+
+.rebalancing-widget .widget-body {
+  display: grid;
+  gap: 16px;
+}
+
+.rebalancing-widget .widget-section {
+  background: #0d0d0d;
+  border: 1px solid #1a1a1a;
+  border-radius: 10px;
+  padding: 16px;
+}
+
+.rebalancing-widget .allocation-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.rebalancing-widget .allocation-input {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: #b3b3b3;
+}
+
+.rebalancing-widget input {
+  background: #121212;
+  border: 1px solid #2a2a2a;
+  border-radius: 8px;
+  color: #fff;
+  padding: 8px;
+}
+
+.rebalancing-widget .allocation-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.rebalancing-widget .threshold-input {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: #b3b3b3;
+}
+
+.rebalancing-widget .suggestions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.rebalancing-widget .suggestion-card {
+  display: grid;
+  grid-template-columns: 80px 1fr 140px;
+  gap: 12px;
+  align-items: center;
+  background: #111111;
+  border: 1px solid #1f1f1f;
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.rebalancing-widget .suggestion-action {
+  font-weight: 600;
+  text-align: center;
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+
+.rebalancing-widget .suggestion-action.buy {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+}
+
+.rebalancing-widget .suggestion-action.sell {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+.rebalancing-widget .suggestion-title {
+  font-weight: 600;
+}
+
+.rebalancing-widget .suggestion-reason {
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+.rebalancing-widget .suggestion-values {
+  text-align: right;
+}
+
+.rebalancing-widget .widget-empty,
+.rebalancing-widget .widget-loading {
+  color: #9ca3af;
+  padding: 8px 0;
+}
