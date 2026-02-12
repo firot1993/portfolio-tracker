@@ -1,4 +1,5 @@
-import { query, run, saveDB } from '../db/index.js';
+import { eq, sql } from 'drizzle-orm';
+import { getDB, userPreferences, holdings, assets } from '../db/index.js';
 import { getAssetPrice, getUSDCNYRate } from './priceService.js';
 
 export type AssetType = 'crypto' | 'stock_us' | 'stock_cn' | 'gold';
@@ -42,17 +43,6 @@ export interface UserPreferences extends AllocationMap {
   updated_at?: string;
 }
 
-interface UserPreferencesRecord {
-  id: number;
-  user_id: number;
-  target_allocation_crypto: number;
-  target_allocation_stock_us: number;
-  target_allocation_stock_cn: number;
-  target_allocation_gold: number;
-  rebalance_threshold: number;
-  updated_at: string;
-}
-
 function normalizeAllocation(input: Partial<AllocationMap>): AllocationMap {
   return {
     crypto: input.crypto ?? DEFAULT_TARGETS.crypto,
@@ -63,49 +53,58 @@ function normalizeAllocation(input: Partial<AllocationMap>): AllocationMap {
 }
 
 export function getUserPreferences(userId: number): UserPreferences {
-  const existing = query<UserPreferencesRecord>(
-    'SELECT * FROM user_preferences WHERE user_id = ?',
-    [userId]
-  )[0];
+  const db = getDB();
+
+  const existing = db.select()
+    .from(userPreferences)
+    .where(eq(userPreferences.userId, userId))
+    .get();
 
   if (existing) {
     return {
-      ...existing,
-      crypto: existing.target_allocation_crypto,
-      stock_us: existing.target_allocation_stock_us,
-      stock_cn: existing.target_allocation_stock_cn,
-      gold: existing.target_allocation_gold,
-    } as UserPreferences;
+      id: existing.id,
+      user_id: existing.userId!,
+      crypto: existing.targetAllocationCrypto!,
+      stock_us: existing.targetAllocationStockUs!,
+      stock_cn: existing.targetAllocationStockCn!,
+      gold: existing.targetAllocationGold!,
+      rebalance_threshold: existing.rebalanceThreshold!,
+      updated_at: existing.updatedAt || undefined,
+    };
   }
 
-  run(
-    `INSERT INTO user_preferences (
-      user_id,
-      target_allocation_crypto,
-      target_allocation_stock_us,
-      target_allocation_stock_cn,
-      target_allocation_gold,
-      rebalance_threshold
-    ) VALUES (?, ?, ?, ?, ?, ?)` ,
-    [userId, DEFAULT_TARGETS.crypto, DEFAULT_TARGETS.stock_us, DEFAULT_TARGETS.stock_cn, DEFAULT_TARGETS.gold, 0.05]
-  );
-  saveDB();
+  // Create default preferences
+  db.insert(userPreferences)
+    .values({
+      userId,
+      targetAllocationCrypto: DEFAULT_TARGETS.crypto,
+      targetAllocationStockUs: DEFAULT_TARGETS.stock_us,
+      targetAllocationStockCn: DEFAULT_TARGETS.stock_cn,
+      targetAllocationGold: DEFAULT_TARGETS.gold,
+      rebalanceThreshold: 0.05,
+    })
+    .run();
 
-  const created = query<UserPreferencesRecord>(
-    'SELECT * FROM user_preferences WHERE user_id = ?',
-    [userId]
-  )[0];
+  const created = db.select()
+    .from(userPreferences)
+    .where(eq(userPreferences.userId, userId))
+    .get();
 
   return {
-    ...created,
-    crypto: created.target_allocation_crypto,
-    stock_us: created.target_allocation_stock_us,
-    stock_cn: created.target_allocation_stock_cn,
-    gold: created.target_allocation_gold,
-  } as UserPreferences;
+    id: created!.id,
+    user_id: created!.userId!,
+    crypto: created!.targetAllocationCrypto!,
+    stock_us: created!.targetAllocationStockUs!,
+    stock_cn: created!.targetAllocationStockCn!,
+    gold: created!.targetAllocationGold!,
+    rebalance_threshold: created!.rebalanceThreshold!,
+    updated_at: created!.updatedAt || undefined,
+  };
 }
 
 export function upsertUserPreferences(userId: number, prefs: Partial<UserPreferences>): UserPreferences {
+  const db = getDB();
+
   const allocation = normalizeAllocation({
     crypto: prefs.crypto,
     stock_us: prefs.stock_us,
@@ -115,54 +114,73 @@ export function upsertUserPreferences(userId: number, prefs: Partial<UserPrefere
 
   const threshold = prefs.rebalance_threshold ?? 0.05;
 
-  run(
-    `INSERT INTO user_preferences (
-      user_id,
-      target_allocation_crypto,
-      target_allocation_stock_us,
-      target_allocation_stock_cn,
-      target_allocation_gold,
-      rebalance_threshold,
-      updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-    ON CONFLICT(user_id) DO UPDATE SET
-      target_allocation_crypto = excluded.target_allocation_crypto,
-      target_allocation_stock_us = excluded.target_allocation_stock_us,
-      target_allocation_stock_cn = excluded.target_allocation_stock_cn,
-      target_allocation_gold = excluded.target_allocation_gold,
-      rebalance_threshold = excluded.rebalance_threshold,
-      updated_at = datetime('now')`,
-    [userId, allocation.crypto, allocation.stock_us, allocation.stock_cn, allocation.gold, threshold]
-  );
-  saveDB();
+  // Check if exists
+  const existing = db.select({ id: userPreferences.id })
+    .from(userPreferences)
+    .where(eq(userPreferences.userId, userId))
+    .get();
+
+  if (existing) {
+    db.update(userPreferences)
+      .set({
+        targetAllocationCrypto: allocation.crypto,
+        targetAllocationStockUs: allocation.stock_us,
+        targetAllocationStockCn: allocation.stock_cn,
+        targetAllocationGold: allocation.gold,
+        rebalanceThreshold: threshold,
+        updatedAt: sql`datetime('now')`,
+      })
+      .where(eq(userPreferences.userId, userId))
+      .run();
+  } else {
+    db.insert(userPreferences)
+      .values({
+        userId,
+        targetAllocationCrypto: allocation.crypto,
+        targetAllocationStockUs: allocation.stock_us,
+        targetAllocationStockCn: allocation.stock_cn,
+        targetAllocationGold: allocation.gold,
+        rebalanceThreshold: threshold,
+      })
+      .run();
+  }
 
   return getUserPreferences(userId);
 }
 
 export async function calculateCurrentAllocation(userId: number): Promise<{ allocation: AllocationMap; totalValue: number }> {
-  const holdings = query(
-    `SELECT h.quantity, h.avg_cost, a.id as asset_id, a.symbol, a.type, a.currency, a.current_price
-     FROM holdings h
-     JOIN assets a ON h.asset_id = a.id
-     WHERE h.user_id = ?`,
-    [userId]
-  ) as Array<{ quantity: number; avg_cost: number; asset_id: number; symbol: string; type: AssetType; currency: string; current_price: number | null }>;
+  const db = getDB();
+
+  const holdingList = db.select({
+    quantity: holdings.quantity,
+    avgCost: holdings.avgCost,
+    assetId: assets.id,
+    symbol: assets.symbol,
+    type: assets.type,
+    currency: assets.currency,
+    currentPrice: assets.currentPrice,
+  })
+    .from(holdings)
+    .innerJoin(assets, eq(holdings.assetId, assets.id))
+    .where(eq(holdings.userId, userId))
+    .all();
 
   const usdcny = await getUSDCNYRate() || 7.2;
   const allocationValue: AllocationMap = { crypto: 0, stock_us: 0, stock_cn: 0, gold: 0 };
   let totalValue = 0;
-  let shouldSave = false;
 
-  for (const holding of holdings) {
-    let price = holding.current_price;
+  for (const holding of holdingList) {
+    let price = holding.currentPrice;
     if (price === null || price === undefined) {
       price = await getAssetPrice(holding.symbol, holding.type);
       if (price !== null) {
-        run(
-          'UPDATE assets SET current_price = ?, price_updated_at = datetime("now") WHERE id = ?',
-          [price, holding.asset_id]
-        );
-        shouldSave = true;
+        db.update(assets)
+          .set({
+            currentPrice: price,
+            priceUpdatedAt: sql`datetime("now")`,
+          })
+          .where(eq(assets.id, holding.assetId))
+          .run();
       }
     }
 
@@ -173,12 +191,9 @@ export async function calculateCurrentAllocation(userId: number): Promise<{ allo
       valueUSD = valueUSD / usdcny;
     }
 
-    allocationValue[holding.type] = (allocationValue[holding.type] || 0) + valueUSD;
+    const assetType = holding.type as AssetType;
+    allocationValue[assetType] = (allocationValue[assetType] || 0) + valueUSD;
     totalValue += valueUSD;
-  }
-
-  if (shouldSave) {
-    saveDB();
   }
 
   const allocationPercent: AllocationMap = {

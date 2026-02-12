@@ -1,14 +1,10 @@
-import { query, run, lastInsertId, getDB, beginTransaction, commitTransaction, rollbackTransaction, saveDB } from './index.js';
+import { eq } from 'drizzle-orm';
+import { getDB, getSqliteDB, users, type User } from './index.js';
 import bcrypt from 'bcrypt';
 
 const SALT_ROUNDS = 10;
 
-export interface User {
-  id: number;
-  email: string;
-  password_hash: string;
-  created_at: string;
-}
+export type { User };
 
 export interface CreateUserInput {
   email: string;
@@ -17,63 +13,50 @@ export interface CreateUserInput {
 
 export async function createUser(email: string, passwordHash: string): Promise<User> {
   const db = getDB();
+  const sqliteDb = getSqliteDB();
 
   // Check if user already exists
-  const existing = query<User>('SELECT id, email, password_hash, created_at FROM users WHERE email = ?', [email]);
-  if (existing.length > 0) {
+  const existing = db.select().from(users).where(eq(users.email, email)).get();
+  if (existing) {
     throw new Error('User with this email already exists');
   }
 
-  beginTransaction();
-  try {
-    run(
-      'INSERT INTO users (email, password_hash) VALUES (?, ?)',
-      [email, passwordHash]
-    );
+  // Use better-sqlite3 transaction
+  const transaction = sqliteDb.transaction(() => {
+    const result = db.insert(users).values({
+      email,
+      passwordHash,
+    }).returning().get();
 
-    const userId = lastInsertId();
-    const user = query<User>(
-      'SELECT id, email, password_hash, created_at FROM users WHERE id = ?',
-      [userId]
-    )[0];
+    return result;
+  });
 
-    commitTransaction();
-    saveDB();
-
-    return user!;
-  } catch (error) {
-    rollbackTransaction();
-    throw error;
-  }
+  return transaction()!;
 }
 
 export function findUserByEmail(email: string): User | undefined {
-  const results = query<User>(
-    'SELECT id, email, password_hash, created_at FROM users WHERE email = ?',
-    [email]
-  );
-  return results[0];
+  const db = getDB();
+  return db.select().from(users).where(eq(users.email, email)).get();
 }
 
 export function findUserById(id: number): User | undefined {
-  const results = query<User>(
-    'SELECT id, email, password_hash, created_at FROM users WHERE id = ?',
-    [id]
-  );
-  return results[0];
+  const db = getDB();
+  return db.select().from(users).where(eq(users.id, id)).get();
 }
 
-export function findUserByIdWithoutPassword(id: number): { id: number; email: string; created_at: string } | undefined {
-  const results = query<{ id: number; email: string; created_at: string }>(
-    'SELECT id, email, created_at FROM users WHERE id = ?',
-    [id]
-  );
-  return results[0];
+export function findUserByIdWithoutPassword(id: number): { id: number; email: string; createdAt: string | null } | undefined {
+  const db = getDB();
+  const result = db.select({
+    id: users.id,
+    email: users.email,
+    createdAt: users.createdAt,
+  }).from(users).where(eq(users.id, id)).get();
+  return result;
 }
 
 export async function updatePassword(userId: number, newHash: string): Promise<void> {
-  run('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, userId]);
-  saveDB();
+  const db = getDB();
+  db.update(users).set({ passwordHash: newHash }).where(eq(users.id, userId)).run();
 }
 
 export async function verifyPassword(password: string, hash: string): Promise<boolean> {

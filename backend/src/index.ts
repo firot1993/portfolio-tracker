@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import { createServer } from 'http';
-import { initDB, getEnvInfo, runMigrations } from './db/index.js';
+import { initDB, getEnvInfo } from './db/index.js';
 import accountsRouter from './routes/accounts.js';
 import assetsRouter from './routes/assets.js';
 import transactionsRouter from './routes/transactions.js';
@@ -53,8 +53,8 @@ app.use(cookieParser());
 app.use('/api/auth', authRouter);
 app.get('/api/health', (req, res) => {
   const stats = realtimePriceService.getStats();
-  res.json({ 
-    status: 'ok', 
+  res.json({
+    status: 'ok',
     timestamp: new Date().toISOString(),
     realtime: {
       enabled: true,
@@ -80,18 +80,18 @@ app.use('/api/history', historyRouter);
 app.use('/api/alerts', alertsRouter);
 
 // Initialize DB then start server
-initDB().then(async () => {
-  // Run migrations to add users table and user_id columns
-  await runMigrations();
+try {
+  // Initialize Drizzle ORM with better-sqlite3
+  initDB();
 
   const { env, dbPath } = getEnvInfo();
-  
+
   // Create HTTP server
   const server = createServer(app);
-  
+
   // Initialize WebSocket server
   initWebSocketServer(server);
-  
+
   // Start realtime price service
   realtimePriceService.start();
 
@@ -123,7 +123,7 @@ initDB().then(async () => {
       console.error('Alert reset error:', error);
     }
   }, 24 * 60 * 60 * 1000);
-  
+
   // Bind to 0.0.0.0 to accept connections from any interface
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Portfolio Tracker API running on http://0.0.0.0:${PORT}`);
@@ -131,7 +131,7 @@ initDB().then(async () => {
     console.log(`   Environment: ${env}`);
     console.log(`   Database: ${dbPath}`);
   });
-}).catch(err => {
+} catch (err) {
   console.error('Failed to initialize database:', err);
   process.exit(1);
-});
+}

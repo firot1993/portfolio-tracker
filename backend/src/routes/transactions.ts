@@ -1,6 +1,6 @@
 import { Router } from 'express';
-import { query, run, lastInsertId, saveDB } from '../db/index.js';
-import { getAssetPrice, getUSDCNYRate } from '../services/priceService.js';
+import { eq, and, desc, isNull, or, sql } from 'drizzle-orm';
+import { getDB, getSqliteDB, transactions, assets, accounts, holdings } from '../db/index.js';
 import { authMiddleware } from '../middleware/auth.js';
 
 const router = Router();
@@ -10,30 +10,44 @@ router.get('/', authMiddleware, (req, res) => {
   const userId = (req as any).user.id;
   const { asset_id, account_id, limit = 100 } = req.query;
 
-  let sql = `
-    SELECT t.*, a.symbol as asset_symbol, a.name as asset_name, a.type as asset_type,
-           acc.name as account_name
-    FROM transactions t
-    JOIN assets a ON t.asset_id = a.id
-    LEFT JOIN accounts acc ON t.account_id = acc.id
-    WHERE t.user_id = ?
-  `;
-  const params: any[] = [userId];
+  const db = getDB();
+
+  // Build conditions
+  const conditions = [eq(transactions.userId, userId)];
 
   if (asset_id) {
-    sql += ' AND t.asset_id = ?';
-    params.push(Number(asset_id));
+    conditions.push(eq(transactions.assetId, Number(asset_id)));
   }
   if (account_id) {
-    sql += ' AND t.account_id = ?';
-    params.push(Number(account_id));
+    conditions.push(eq(transactions.accountId, Number(account_id)));
   }
 
-  sql += ' ORDER BY t.date DESC LIMIT ?';
-  params.push(Number(limit));
+  const txnList = db.select({
+    id: transactions.id,
+    userId: transactions.userId,
+    assetId: transactions.assetId,
+    accountId: transactions.accountId,
+    type: transactions.type,
+    quantity: transactions.quantity,
+    price: transactions.price,
+    fee: transactions.fee,
+    date: transactions.date,
+    notes: transactions.notes,
+    createdAt: transactions.createdAt,
+    asset_symbol: assets.symbol,
+    asset_name: assets.name,
+    asset_type: assets.type,
+    account_name: accounts.name,
+  })
+    .from(transactions)
+    .innerJoin(assets, eq(transactions.assetId, assets.id))
+    .leftJoin(accounts, eq(transactions.accountId, accounts.id))
+    .where(and(...conditions))
+    .orderBy(desc(transactions.date))
+    .limit(Number(limit))
+    .all();
 
-  const transactions = query(sql, params);
-  res.json(transactions);
+  res.json(txnList);
 });
 
 // Add transaction and update holdings
@@ -61,61 +75,97 @@ router.post('/', authMiddleware, (req, res) => {
     return res.status(400).json({ error: 'Invalid transaction type' });
   }
 
-  // Verify asset belongs to user
-  const assetCheck = query(
-    'SELECT id FROM assets WHERE id = ? AND (user_id = ? OR user_id IS NULL)',
-    [asset_id, userId]
-  );
-  if (assetCheck.length === 0) {
+  const db = getDB();
+  const sqliteDb = getSqliteDB();
+
+  // Verify asset exists (assets are global)
+  const assetCheck = db.select({ id: assets.id })
+    .from(assets)
+    .where(eq(assets.id, asset_id))
+    .get();
+
+  if (!assetCheck) {
     return res.status(404).json({ error: 'Asset not found' });
   }
 
-  // Insert transaction
-  run(
-    `INSERT INTO transactions (user_id, asset_id, account_id, type, quantity, price, fee, date, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [userId, asset_id, account_id || null, type, quantity, price, fee, date, notes || null]
-  );
-  const transactionId = lastInsertId();
+  let insertedTxn: any;
 
-  // Update holdings
-  const existing = query(
-    'SELECT * FROM holdings WHERE asset_id = ? AND (account_id = ? OR (account_id IS NULL AND ? IS NULL)) AND user_id = ?',
-    [asset_id, account_id || null, account_id || null, userId]
-  )[0] as any;
+  const insertOp = sqliteDb.transaction(() => {
+    // Insert transaction
+    insertedTxn = db.insert(transactions)
+      .values({
+        userId,
+        assetId: asset_id,
+        accountId: account_id || null,
+        type,
+        quantity,
+        price,
+        fee,
+        date,
+        notes: notes || null,
+      })
+      .returning()
+      .get();
 
-  if (type === 'buy' || type === 'transfer_in') {
-    if (existing) {
-      const newQty = existing.quantity + quantity;
-      const newAvgCost = (existing.avg_cost * existing.quantity + price * quantity) / newQty;
-      run(
-        `UPDATE holdings SET quantity = ?, avg_cost = ?, updated_at = datetime('now')
-         WHERE id = ? AND user_id = ?`,
-        [newQty, newAvgCost, existing.id, userId]
-      );
-    } else {
-      run(
-        'INSERT INTO holdings (user_id, asset_id, account_id, quantity, avg_cost) VALUES (?, ?, ?, ?, ?)',
-        [userId, asset_id, account_id || null, quantity, price]
-      );
-    }
-  } else if (type === 'sell' || type === 'transfer_out') {
-    if (existing) {
-      const newQty = existing.quantity - quantity;
-      if (newQty <= 0) {
-        run('DELETE FROM holdings WHERE id = ? AND user_id = ?', [existing.id, userId]);
+    // Update holdings
+    const accountCondition = account_id
+      ? eq(holdings.accountId, account_id)
+      : isNull(holdings.accountId);
+
+    const existing = db.select()
+      .from(holdings)
+      .where(and(
+        eq(holdings.assetId, asset_id),
+        accountCondition,
+        eq(holdings.userId, userId)
+      ))
+      .get();
+
+    if (type === 'buy' || type === 'transfer_in') {
+      if (existing) {
+        const newQty = existing.quantity + quantity;
+        const newAvgCost = (existing.avgCost * existing.quantity + price * quantity) / newQty;
+        db.update(holdings)
+          .set({
+            quantity: newQty,
+            avgCost: newAvgCost,
+            updatedAt: sql`datetime('now')`,
+          })
+          .where(and(eq(holdings.id, existing.id), eq(holdings.userId, userId)))
+          .run();
       } else {
-        run(
-          `UPDATE holdings SET quantity = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ?`,
-          [newQty, existing.id, userId]
-        );
+        db.insert(holdings)
+          .values({
+            userId,
+            assetId: asset_id,
+            accountId: account_id || null,
+            quantity,
+            avgCost: price,
+          })
+          .run();
+      }
+    } else if (type === 'sell' || type === 'transfer_out') {
+      if (existing) {
+        const newQty = existing.quantity - quantity;
+        if (newQty <= 0) {
+          db.delete(holdings)
+            .where(and(eq(holdings.id, existing.id), eq(holdings.userId, userId)))
+            .run();
+        } else {
+          db.update(holdings)
+            .set({
+              quantity: newQty,
+              updatedAt: sql`datetime('now')`,
+            })
+            .where(and(eq(holdings.id, existing.id), eq(holdings.userId, userId)))
+            .run();
+        }
       }
     }
-  }
+  });
 
-  saveDB();
-  const transaction = query('SELECT * FROM transactions WHERE id = ?', [transactionId])[0];
-  res.status(201).json(transaction);
+  insertOp();
+  res.status(201).json(insertedTxn);
 });
 
 // Update transaction
@@ -124,30 +174,34 @@ router.put('/:id', authMiddleware, (req, res) => {
   const { id } = req.params;
   const { type, quantity, price, fee, date, notes } = req.body;
 
+  const db = getDB();
+
   // Verify ownership
-  const existing = query(
-    'SELECT id FROM transactions WHERE id = ? AND user_id = ?',
-    [Number(id), userId]
-  );
-  if (existing.length === 0) {
+  const existing = db.select({ id: transactions.id })
+    .from(transactions)
+    .where(and(eq(transactions.id, Number(id)), eq(transactions.userId, userId)))
+    .get();
+
+  if (!existing) {
     return res.status(404).json({ error: 'Transaction not found' });
   }
 
-  run(
-    `UPDATE transactions
-     SET type = COALESCE(?, type),
-         quantity = COALESCE(?, quantity),
-         price = COALESCE(?, price),
-         fee = COALESCE(?, fee),
-         date = COALESCE(?, date),
-         notes = COALESCE(?, notes)
-     WHERE id = ? AND user_id = ?`,
-    [type, quantity, price, fee, date, notes, Number(id), userId]
-  );
-  saveDB();
+  // Build update object with only provided fields
+  const updateData: Record<string, any> = {};
+  if (type !== undefined) updateData.type = type;
+  if (quantity !== undefined) updateData.quantity = quantity;
+  if (price !== undefined) updateData.price = price;
+  if (fee !== undefined) updateData.fee = fee;
+  if (date !== undefined) updateData.date = date;
+  if (notes !== undefined) updateData.notes = notes;
 
-  const transaction = query('SELECT * FROM transactions WHERE id = ?', [Number(id)])[0];
-  res.json(transaction);
+  const updated = db.update(transactions)
+    .set(updateData)
+    .where(and(eq(transactions.id, Number(id)), eq(transactions.userId, userId)))
+    .returning()
+    .get();
+
+  res.json(updated);
 });
 
 // Delete transaction
@@ -155,53 +209,76 @@ router.delete('/:id', authMiddleware, (req, res) => {
   const userId = (req as any).user.id;
   const { id } = req.params;
 
+  const db = getDB();
+  const sqliteDb = getSqliteDB();
+
   try {
     // Get transaction details before deleting
-    const transaction = query(
-      'SELECT * FROM transactions WHERE id = ? AND user_id = ?',
-      [Number(id), userId]
-    )[0] as any;
+    const txn = db.select()
+      .from(transactions)
+      .where(and(eq(transactions.id, Number(id)), eq(transactions.userId, userId)))
+      .get();
 
-    if (!transaction) {
+    if (!txn) {
       return res.status(404).json({ error: 'Transaction not found' });
     }
 
-    // Reverse update holdings
-    const existing = query(
-      'SELECT * FROM holdings WHERE asset_id = ? AND (account_id = ? OR (account_id IS NULL AND ? IS NULL)) AND user_id = ?',
-      [transaction.asset_id, transaction.account_id || null, transaction.account_id || null, userId]
-    )[0] as any;
+    const deleteOp = sqliteDb.transaction(() => {
+      // Reverse update holdings
+      const accountCondition = txn.accountId
+        ? eq(holdings.accountId, txn.accountId)
+        : isNull(holdings.accountId);
 
-    if (existing) {
-      if (transaction.type === 'buy' || transaction.type === 'transfer_in') {
-        // Reverse buy/transfer_in: decrease quantity
-        const newQty = existing.quantity - transaction.quantity;
-        if (newQty <= 0) {
-          run('DELETE FROM holdings WHERE id = ? AND user_id = ?', [existing.id, userId]);
-        } else {
-          // Recalculate average cost
-          const totalCost = existing.avg_cost * existing.quantity - transaction.price * transaction.quantity;
-          const newAvgCost = totalCost / newQty;
-          run(
-            `UPDATE holdings SET quantity = ?, avg_cost = ?, updated_at = datetime('now')
-             WHERE id = ? AND user_id = ?`,
-            [newQty, newAvgCost, existing.id, userId]
-          );
+      const existing = db.select()
+        .from(holdings)
+        .where(and(
+          eq(holdings.assetId, txn.assetId!),
+          accountCondition,
+          eq(holdings.userId, userId)
+        ))
+        .get();
+
+      if (existing) {
+        if (txn.type === 'buy' || txn.type === 'transfer_in') {
+          // Reverse buy/transfer_in: decrease quantity
+          const newQty = existing.quantity - txn.quantity;
+          if (newQty <= 0) {
+            db.delete(holdings)
+              .where(and(eq(holdings.id, existing.id), eq(holdings.userId, userId)))
+              .run();
+          } else {
+            // Recalculate average cost
+            const totalCost = existing.avgCost * existing.quantity - txn.price * txn.quantity;
+            const newAvgCost = totalCost / newQty;
+            db.update(holdings)
+              .set({
+                quantity: newQty,
+                avgCost: newAvgCost,
+                updatedAt: sql`datetime('now')`,
+              })
+              .where(and(eq(holdings.id, existing.id), eq(holdings.userId, userId)))
+              .run();
+          }
+        } else if (txn.type === 'sell' || txn.type === 'transfer_out') {
+          // Reverse sell/transfer_out: increase quantity
+          const newQty = existing.quantity + txn.quantity;
+          db.update(holdings)
+            .set({
+              quantity: newQty,
+              updatedAt: sql`datetime('now')`,
+            })
+            .where(and(eq(holdings.id, existing.id), eq(holdings.userId, userId)))
+            .run();
         }
-      } else if (transaction.type === 'sell' || transaction.type === 'transfer_out') {
-        // Reverse sell/transfer_out: increase quantity
-        const newQty = existing.quantity + transaction.quantity;
-        run(
-          `UPDATE holdings SET quantity = ?, updated_at = datetime('now')
-           WHERE id = ? AND user_id = ?`,
-          [newQty, existing.id, userId]
-        );
       }
-    }
 
-    // Delete transaction
-    run('DELETE FROM transactions WHERE id = ? AND user_id = ?', [Number(id), userId]);
-    saveDB();
+      // Delete transaction
+      db.delete(transactions)
+        .where(and(eq(transactions.id, Number(id)), eq(transactions.userId, userId)))
+        .run();
+    });
+
+    deleteOp();
     res.status(204).send();
   } catch (error: any) {
     console.error('Error deleting transaction:', error);

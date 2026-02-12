@@ -1,7 +1,8 @@
 import { Router, Response } from 'express';
+import { eq } from 'drizzle-orm';
 import { AuthenticatedRequest, authMiddleware, generateToken } from '../middleware/auth.js';
 import { createUser, findUserByEmail, hashPassword, verifyPassword, updatePassword } from '../db/users.js';
-import { query, run, saveDB } from '../db/index.js';
+import { getDB, getSqliteDB, users, transactions, holdings, accounts, priceHistory } from '../db/index.js';
 
 const router = Router();
 
@@ -38,7 +39,7 @@ router.post('/register', async (req: AuthenticatedRequest, res: Response) => {
     });
 
     res.status(201).json({
-      user: { id: user.id, email: user.email, created_at: user.created_at },
+      user: { id: user.id, email: user.email, created_at: user.createdAt },
     });
   } catch (error: any) {
     if (error.message.includes('already exists')) {
@@ -63,7 +64,7 @@ router.post('/login', async (req: AuthenticatedRequest, res: Response) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    const validPassword = await verifyPassword(password, user.password_hash);
+    const validPassword = await verifyPassword(password, user.passwordHash);
     if (!validPassword) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
@@ -80,7 +81,7 @@ router.post('/login', async (req: AuthenticatedRequest, res: Response) => {
     });
 
     res.json({
-      user: { id: user.id, email: user.email, created_at: user.created_at },
+      user: { id: user.id, email: user.email, created_at: user.createdAt },
     });
   } catch (error) {
     console.error('Login error:', error);
@@ -126,7 +127,7 @@ router.post('/change-password', authMiddleware, async (req: AuthenticatedRequest
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const validPassword = await verifyPassword(currentPassword, user.password_hash);
+    const validPassword = await verifyPassword(currentPassword, user.passwordHash);
     if (!validPassword) {
       return res.status(401).json({ error: 'Current password is incorrect' });
     }
@@ -155,25 +156,25 @@ router.delete('/account', authMiddleware, async (req: AuthenticatedRequest, res:
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const validPassword = await verifyPassword(password, user.password_hash);
+    const validPassword = await verifyPassword(password, user.passwordHash);
     if (!validPassword) {
       return res.status(401).json({ error: 'Password is incorrect' });
     }
 
-    // Delete all user data (cascade should handle this via queries)
-    // First delete user-specific data
+    const db = getDB();
+    const sqliteDb = getSqliteDB();
     const userId = req.user!.id;
 
-    // Delete transactions, holdings (will be handled by cascade if FK constraints exist)
-    // Delete user's assets (owned by user)
-    run('DELETE FROM transactions WHERE user_id = ?', [userId]);
-    run('DELETE FROM holdings WHERE user_id = ?', [userId]);
-    run('DELETE FROM accounts WHERE user_id = ?', [userId]);
-    run('DELETE FROM price_history WHERE user_id = ?', [userId]);
+    // Delete all user data in a transaction
+    const deleteOp = sqliteDb.transaction(() => {
+      db.delete(transactions).where(eq(transactions.userId, userId)).run();
+      db.delete(holdings).where(eq(holdings.userId, userId)).run();
+      db.delete(accounts).where(eq(accounts.userId, userId)).run();
+      db.delete(priceHistory).where(eq(priceHistory.userId, userId)).run();
+      db.delete(users).where(eq(users.id, userId)).run();
+    });
 
-    // Finally delete the user
-    run('DELETE FROM users WHERE id = ?', [userId]);
-    saveDB();
+    deleteOp();
 
     res.clearCookie('token', {
       httpOnly: true,
