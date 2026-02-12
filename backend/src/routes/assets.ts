@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { query, run, lastInsertId, saveDB, withTransaction } from '../db/index.js';
+import { eq, like, or, asc, sql, count } from 'drizzle-orm';
+import { getDB, getSqliteDB, assets, holdings, transactions, backfillJobs } from '../db/index.js';
 import { getAssetPrice } from '../services/priceService.js';
 import { defaultAssets } from '../db/seeds.js';
 import { authMiddleware } from '../middleware/auth.js';
@@ -23,15 +24,17 @@ const isAssetAdmin = (req: any): boolean => {
 // Use ?includePrices=true to fetch prices (may be slow for many assets)
 router.get('/', authMiddleware, async (req, res) => {
   const { includePrices } = req.query;
+  const db = getDB();
 
-  const assets = query(
-    'SELECT * FROM assets ORDER BY type, symbol'
-  );
+  const assetList = db.select()
+    .from(assets)
+    .orderBy(asc(assets.type), asc(assets.symbol))
+    .all();
 
   // Only fetch prices if explicitly requested
   if (includePrices === 'true') {
     const assetsWithPrices = await Promise.all(
-      assets.map(async (asset: any) => {
+      assetList.map(async (asset) => {
         const price = await getAssetPrice(asset.symbol, asset.type);
         return { ...asset, currentPrice: price };
       })
@@ -39,7 +42,7 @@ router.get('/', authMiddleware, async (req, res) => {
     res.json(assetsWithPrices);
   } else {
     // Return assets without prices (frontend can fetch individually)
-    res.json(assets.map((asset: any) => ({ ...asset, currentPrice: null })));
+    res.json(assetList.map((asset) => ({ ...asset, currentPrice: null })));
   }
 });
 
@@ -55,23 +58,41 @@ router.post('/', authMiddleware, async (req, res) => {
     if (!isAssetAdmin(req)) {
       return res.status(403).json({ success: false, error: 'Asset admin access required' });
     }
-    await withTransaction(() => {
-      run(
-        'INSERT INTO assets (user_id, symbol, name, type, exchange, currency) VALUES (?, ?, ?, ?, ?, ?)',
-        [null, symbol.toUpperCase(), name, type, exchange || null, currency]
-      );
 
-      const id = lastInsertId();
-      run(
-        'INSERT INTO backfill_jobs (asset_id, range, status, user_id) VALUES (?, ?, ?, ?)',
-        [id, '1Y', 'queued', getUserId(req)]
-      );
-      saveDB();
-      return id;
+    const db = getDB();
+    const sqliteDb = getSqliteDB();
+
+    let insertedId: number | undefined;
+
+    const insertOp = sqliteDb.transaction(() => {
+      const result = db.insert(assets)
+        .values({
+          symbol: symbol.toUpperCase(),
+          name,
+          type,
+          exchange: exchange || null,
+          currency
+        })
+        .returning({ id: assets.id })
+        .get();
+
+      insertedId = result?.id;
+
+      if (insertedId) {
+        db.insert(backfillJobs)
+          .values({
+            assetId: insertedId,
+            range: '1Y',
+            status: 'queued',
+            userId: getUserId(req)
+          })
+          .run();
+      }
     });
 
-    const id = lastInsertId();
-    const asset = query('SELECT * FROM assets WHERE id = ?', [id])[0];
+    insertOp();
+
+    const asset = db.select().from(assets).where(eq(assets.id, insertedId!)).get();
     res.status(201).json({ success: true, data: asset });
   } catch (error: any) {
     if (error.message?.includes('UNIQUE')) {
@@ -85,12 +106,12 @@ router.post('/', authMiddleware, async (req, res) => {
 // Get single asset price
 router.get('/:id/price', authMiddleware, async (req, res) => {
   const { id } = req.params;
+  const db = getDB();
 
-  // Verify ownership
-  const asset = query(
-    'SELECT * FROM assets WHERE id = ?',
-    [Number(id)]
-  )[0] as any;
+  const asset = db.select()
+    .from(assets)
+    .where(eq(assets.id, Number(id)))
+    .get();
 
   if (!asset) {
     return res.status(404).json({ error: 'Asset not found' });
@@ -114,15 +135,15 @@ router.post('/prices/batch', authMiddleware, async (req, res) => {
     return res.status(400).json({ error: 'Maximum 50 assets per batch' });
   }
 
-  const results: Array<{ id: number; symbol: string; price: number | null; currency: string }> = [];
+  const db = getDB();
+  const results: Array<{ id: number; symbol: string; price: number | null; currency: string | null }> = [];
 
   // Fetch prices with small delays to avoid rate limits
   for (const id of ids) {
-    // Verify ownership
-    const asset = query(
-      'SELECT * FROM assets WHERE id = ?',
-      [Number(id)]
-    )[0] as any;
+    const asset = db.select()
+      .from(assets)
+      .where(eq(assets.id, Number(id)))
+      .get();
 
     if (asset) {
       const price = await getAssetPrice(asset.symbol, asset.type);
@@ -149,24 +170,25 @@ router.delete('/:id', authMiddleware, (req, res) => {
   }
   const { id } = req.params;
   const assetId = Number(id);
+  const db = getDB();
+  const sqliteDb = getSqliteDB();
 
-  // Verify ownership
-  const existing = query(
-    'SELECT id FROM assets WHERE id = ?',
-    [assetId]
-  );
+  const existing = db.select({ id: assets.id })
+    .from(assets)
+    .where(eq(assets.id, assetId))
+    .get();
 
-  if (existing.length === 0) {
+  if (!existing) {
     return res.status(404).json({ error: 'Asset not found' });
   }
 
-  // First delete related transactions
-  run('DELETE FROM transactions WHERE asset_id = ?', [assetId]);
-  // Then delete related holdings
-  run('DELETE FROM holdings WHERE asset_id = ?', [assetId]);
-  // Finally delete the asset
-  run('DELETE FROM assets WHERE id = ?', [assetId]);
-  saveDB();
+  const deleteOp = sqliteDb.transaction(() => {
+    db.delete(transactions).where(eq(transactions.assetId, assetId)).run();
+    db.delete(holdings).where(eq(holdings.assetId, assetId)).run();
+    db.delete(assets).where(eq(assets.id, assetId)).run();
+  });
+
+  deleteOp();
   res.status(204).send();
 });
 
@@ -176,23 +198,25 @@ router.delete('/by-symbol/:symbol', authMiddleware, (req, res) => {
     return res.status(403).json({ error: 'Asset admin access required' });
   }
   const { symbol } = req.params;
+  const db = getDB();
+  const sqliteDb = getSqliteDB();
 
-  // Verify ownership
-  const asset = query(
-    'SELECT id FROM assets WHERE symbol = ?',
-    [symbol.toUpperCase()]
-  )[0] as any;
+  const asset = db.select({ id: assets.id })
+    .from(assets)
+    .where(eq(assets.symbol, symbol.toUpperCase()))
+    .get();
 
   if (!asset) {
     return res.status(404).json({ error: 'Asset not found' });
   }
-  // Delete related transactions
-  run('DELETE FROM transactions WHERE asset_id = ?', [asset.id]);
-  // Delete related holdings
-  run('DELETE FROM holdings WHERE asset_id = ?', [asset.id]);
-  // Delete the asset
-  run('DELETE FROM assets WHERE id = ?', [asset.id]);
-  saveDB();
+
+  const deleteOp = sqliteDb.transaction(() => {
+    db.delete(transactions).where(eq(transactions.assetId, asset.id)).run();
+    db.delete(holdings).where(eq(holdings.assetId, asset.id)).run();
+    db.delete(assets).where(eq(assets.id, asset.id)).run();
+  });
+
+  deleteOp();
   res.status(204).send();
 });
 
@@ -201,10 +225,16 @@ router.delete('/cleanup/all', authMiddleware, (req, res) => {
   if (process.env.NODE_ENV !== 'test' && !isAssetAdmin(req)) {
     return res.status(403).json({ error: 'Asset admin access required' });
   }
-  run('DELETE FROM transactions');
-  run('DELETE FROM holdings');
-  run('DELETE FROM assets');
-  saveDB();
+  const db = getDB();
+  const sqliteDb = getSqliteDB();
+
+  const deleteOp = sqliteDb.transaction(() => {
+    db.delete(transactions).run();
+    db.delete(holdings).run();
+    db.delete(assets).run();
+  });
+
+  deleteOp();
   res.status(204).send();
 });
 
@@ -213,17 +243,23 @@ router.delete('/cleanup/test-data', authMiddleware, (req, res) => {
   if (process.env.NODE_ENV !== 'test' && !isAssetAdmin(req)) {
     return res.status(403).json({ error: 'Asset admin access required' });
   }
-  const testAssets = query(
-    "SELECT id FROM assets WHERE symbol LIKE 'TEST%'"
-  );
+  const db = getDB();
+  const sqliteDb = getSqliteDB();
 
-  for (const asset of testAssets) {
-    run('DELETE FROM transactions WHERE asset_id = ?', [asset.id]);
-    run('DELETE FROM holdings WHERE asset_id = ?', [asset.id]);
-    run('DELETE FROM assets WHERE id = ?', [asset.id]);
-  }
+  const testAssets = db.select({ id: assets.id })
+    .from(assets)
+    .where(like(assets.symbol, 'TEST%'))
+    .all();
 
-  saveDB();
+  const deleteOp = sqliteDb.transaction(() => {
+    for (const asset of testAssets) {
+      db.delete(transactions).where(eq(transactions.assetId, asset.id)).run();
+      db.delete(holdings).where(eq(holdings.assetId, asset.id)).run();
+      db.delete(assets).where(eq(assets.id, asset.id)).run();
+    }
+  });
+
+  deleteOp();
   res.status(204).send();
 });
 
@@ -231,11 +267,18 @@ router.delete('/cleanup/test-data', authMiddleware, (req, res) => {
 router.get('/search/:query', authMiddleware, (req, res) => {
   const { query: searchQuery } = req.params;
   const searchTerm = `%${searchQuery}%`;
-  const assets = query(
-    'SELECT * FROM assets WHERE symbol LIKE ? OR name LIKE ? ORDER BY type, symbol',
-    [searchTerm, searchTerm]
-  );
-  res.json(assets.map((asset: any) => ({ ...asset, currentPrice: null })));
+  const db = getDB();
+
+  const assetList = db.select()
+    .from(assets)
+    .where(or(
+      like(assets.symbol, searchTerm),
+      like(assets.name, searchTerm)
+    ))
+    .orderBy(asc(assets.type), asc(assets.symbol))
+    .all();
+
+  res.json(assetList.map((asset) => ({ ...asset, currentPrice: null })));
 });
 
 // Seed default assets (manual trigger)
@@ -245,11 +288,14 @@ router.post('/seed', authMiddleware, (req, res) => {
     return res.status(403).json({ error: 'Asset admin access required' });
   }
   const { force } = req.body;
+  const db = getDB();
 
   // Check existing assets
-  const existingCount = (query(
-    'SELECT COUNT(*) as count FROM assets'
-  )[0] as { count: number }).count;
+  const countResult = db.select({ count: count() })
+    .from(assets)
+    .get();
+
+  const existingCount = countResult?.count ?? 0;
 
   if (existingCount > 0 && !force) {
     return res.status(409).json({
@@ -264,10 +310,15 @@ router.post('/seed', authMiddleware, (req, res) => {
 
   for (const asset of defaultAssets) {
     try {
-      run(
-        'INSERT INTO assets (user_id, symbol, name, type, exchange, currency) VALUES (?, ?, ?, ?, ?, ?)',
-        [null, asset.symbol, asset.name, asset.type, asset.exchange || null, asset.currency]
-      );
+      db.insert(assets)
+        .values({
+          symbol: asset.symbol,
+          name: asset.name,
+          type: asset.type,
+          exchange: asset.exchange || null,
+          currency: asset.currency
+        })
+        .run();
       successCount++;
     } catch (error: any) {
       if (error.message?.includes('UNIQUE')) {
@@ -275,8 +326,6 @@ router.post('/seed', authMiddleware, (req, res) => {
       }
     }
   }
-
-  saveDB();
 
   res.json({
     success: true,

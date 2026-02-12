@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { query, run, saveDB } from '../db/index.js';
+import { eq } from 'drizzle-orm';
+import { getDB, assets } from '../db/index.js';
 import {
   getPortfolioHistory,
   getAssetHistory,
@@ -89,11 +90,14 @@ router.get('/asset/:id', authMiddleware, async (req, res) => {
       return res.status(400).json(response);
     }
 
-    // Get asset info and verify ownership
-    const asset = query(
-      'SELECT id, symbol, name FROM assets WHERE id = ? AND (user_id = ? OR user_id IS NULL)',
-      [assetId, userId]
-    )[0];
+    const db = getDB();
+
+    // Get asset info and verify it exists (assets are global)
+    const asset = db.select({ id: assets.id, symbol: assets.symbol, name: assets.name })
+      .from(assets)
+      .where(eq(assets.id, assetId))
+      .get();
+
     if (!asset) {
       const response: ApiResponse<never> = {
         success: false,
@@ -212,11 +216,14 @@ router.post('/asset/:id/price', authMiddleware, (req, res) => {
       return res.status(400).json(response);
     }
 
-    // Verify asset exists and belongs to user
-    const asset = query(
-      'SELECT id FROM assets WHERE id = ? AND (user_id = ? OR user_id IS NULL)',
-      [assetId, userId]
-    )[0];
+    const db = getDB();
+
+    // Verify asset exists (assets are global)
+    const asset = db.select({ id: assets.id })
+      .from(assets)
+      .where(eq(assets.id, assetId))
+      .get();
+
     if (!asset) {
       const response: ApiResponse<never> = {
         success: false,

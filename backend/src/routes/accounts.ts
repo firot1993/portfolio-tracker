@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { query, run, lastInsertId, saveDB, beginTransaction, commitTransaction, rollbackTransaction } from '../db/index.js';
+import { eq, and, desc } from 'drizzle-orm';
+import { getDB, getSqliteDB, accounts, holdings, transactions } from '../db/index.js';
 import { authMiddleware } from '../middleware/auth.js';
 
 const router = Router();
@@ -7,11 +8,15 @@ const router = Router();
 // Get all accounts
 router.get('/', authMiddleware, (req, res) => {
   const userId = (req as any).user.id;
-  const accounts = query(
-    'SELECT * FROM accounts WHERE user_id = ? ORDER BY created_at DESC',
-    [userId]
-  );
-  res.json(accounts);
+  const db = getDB();
+
+  const result = db.select()
+    .from(accounts)
+    .where(eq(accounts.userId, userId))
+    .orderBy(desc(accounts.createdAt))
+    .all();
+
+  res.json(result);
 });
 
 // Create account
@@ -23,14 +28,13 @@ router.post('/', authMiddleware, (req, res) => {
     return res.status(400).json({ error: 'Name and type are required' });
   }
 
-  run(
-    'INSERT INTO accounts (user_id, name, type, currency) VALUES (?, ?, ?, ?)',
-    [userId, name, type, currency]
-  );
-  saveDB();
+  const db = getDB();
 
-  const id = lastInsertId();
-  const account = query('SELECT * FROM accounts WHERE id = ?', [id])[0];
+  const account = db.insert(accounts)
+    .values({ userId, name, type, currency })
+    .returning()
+    .get();
+
   res.status(201).json(account);
 });
 
@@ -39,40 +43,56 @@ router.put('/:id', authMiddleware, (req, res) => {
   const userId = (req as any).user.id;
   const { id } = req.params;
   const { name, type, currency } = req.body;
+  const accountId = parseInt(id);
+
+  const db = getDB();
 
   // Verify ownership
-  const existing = query('SELECT id FROM accounts WHERE id = ? AND user_id = ?', [id, userId]);
-  if (existing.length === 0) {
+  const existing = db.select({ id: accounts.id })
+    .from(accounts)
+    .where(and(eq(accounts.id, accountId), eq(accounts.userId, userId)))
+    .get();
+
+  if (!existing) {
     return res.status(404).json({ error: 'Account not found' });
   }
 
-  run(
-    'UPDATE accounts SET name = ?, type = ?, currency = ? WHERE id = ? AND user_id = ?',
-    [name, type, currency, id, userId]
-  );
-  saveDB();
+  const updated = db.update(accounts)
+    .set({ name, type, currency })
+    .where(and(eq(accounts.id, accountId), eq(accounts.userId, userId)))
+    .returning()
+    .get();
 
-  const account = query('SELECT * FROM accounts WHERE id = ?', [id])[0];
-  res.json(account);
+  res.json(updated);
 });
 
 // Delete account
 router.delete('/:id', authMiddleware, (req, res) => {
   const userId = (req as any).user.id;
   const { id } = req.params;
+  const accountId = parseInt(id);
+
+  const db = getDB();
+  const sqliteDb = getSqliteDB();
 
   // Verify ownership
-  const existing = query('SELECT id FROM accounts WHERE id = ? AND user_id = ?', [id, userId]);
-  if (existing.length === 0) {
+  const existing = db.select({ id: accounts.id })
+    .from(accounts)
+    .where(and(eq(accounts.id, accountId), eq(accounts.userId, userId)))
+    .get();
+
+  if (!existing) {
     return res.status(404).json({ error: 'Account not found' });
   }
 
-  // Delete related holdings and transactions first
-  run('DELETE FROM holdings WHERE account_id = ?', [id]);
-  run('DELETE FROM transactions WHERE account_id = ?', [id]);
+  // Delete related holdings, transactions, and account in a transaction
+  const deleteOp = sqliteDb.transaction(() => {
+    db.delete(holdings).where(eq(holdings.accountId, accountId)).run();
+    db.delete(transactions).where(eq(transactions.accountId, accountId)).run();
+    db.delete(accounts).where(and(eq(accounts.id, accountId), eq(accounts.userId, userId))).run();
+  });
 
-  run('DELETE FROM accounts WHERE id = ? AND user_id = ?', [id, userId]);
-  saveDB();
+  deleteOp();
 
   res.json({ message: 'Account deleted successfully' });
 });
@@ -86,27 +106,26 @@ router.post('/seed', authMiddleware, (req, res) => {
     { name: 'Savings', type: 'savings', currency: 'USD' },
   ];
 
-  beginTransaction();
-  try {
+  const db = getDB();
+  const sqliteDb = getSqliteDB();
+
+  const seedOp = sqliteDb.transaction(() => {
     for (const acc of demoAccounts) {
-      run(
-        'INSERT INTO accounts (user_id, name, type, currency) VALUES (?, ?, ?, ?)',
-        [userId, acc.name, acc.type, acc.currency]
-      );
+      db.insert(accounts)
+        .values({ userId, name: acc.name, type: acc.type, currency: acc.currency })
+        .run();
     }
-    commitTransaction();
-    saveDB();
+  });
 
-    const accounts = query(
-      'SELECT * FROM accounts WHERE user_id = ? ORDER BY created_at DESC',
-      [userId]
-    );
+  seedOp();
 
-    res.json(accounts);
-  } catch (error) {
-    rollbackTransaction();
-    throw error;
-  }
+  const result = db.select()
+    .from(accounts)
+    .where(eq(accounts.userId, userId))
+    .orderBy(desc(accounts.createdAt))
+    .all();
+
+  res.json(result);
 });
 
 export default router;

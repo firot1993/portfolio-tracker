@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { query, run, lastInsertId, saveDB } from '../db/index.js';
+import { eq, and, desc, sql } from 'drizzle-orm';
+import { getDB, alerts, assets, alertNotifications } from '../db/index.js';
 import { getAssetPrice } from '../services/priceService.js';
 import { authMiddleware } from '../middleware/auth.js';
 
@@ -19,21 +20,28 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ success: false, error: 'Threshold must be greater than 0' });
   }
 
-  const asset = query('SELECT id, symbol, name FROM assets WHERE id = ?', [asset_id])[0] as any;
+  const db = getDB();
+
+  const asset = db.select({ id: assets.id, symbol: assets.symbol, name: assets.name })
+    .from(assets)
+    .where(eq(assets.id, asset_id))
+    .get();
+
   if (!asset) {
     return res.status(404).json({ success: false, error: 'Asset not found' });
   }
 
   try {
-    run(
-      `INSERT INTO alerts (user_id, asset_id, alert_type, threshold, is_active)
-       VALUES (?, ?, ?, ?, ?)` ,
-      [userId, asset_id, alert_type, threshold, is_active ? 1 : 0]
-    );
-    saveDB();
-
-    const id = lastInsertId();
-    const created = query('SELECT * FROM alerts WHERE id = ?', [id])[0] as any;
+    const created = db.insert(alerts)
+      .values({
+        userId,
+        assetId: asset_id,
+        alertType: alert_type,
+        threshold,
+        isActive: is_active,
+      })
+      .returning()
+      .get();
 
     res.status(201).json({
       success: true,
@@ -54,31 +62,42 @@ router.post('/', async (req, res) => {
 router.get('/', async (req, res) => {
   const userId = (req as any).user.id;
   const { is_active, asset_id } = req.query;
+  const db = getDB();
 
-  const filters: string[] = ['a.user_id = ?'];
-  const params: any[] = [userId];
+  // Build conditions dynamically
+  const conditions = [eq(alerts.userId, userId)];
 
   if (is_active !== undefined) {
-    filters.push('a.is_active = ?');
-    params.push(is_active === 'true' ? 1 : 0);
+    conditions.push(eq(alerts.isActive, is_active === 'true'));
   }
 
   if (asset_id) {
-    filters.push('a.asset_id = ?');
-    params.push(Number(asset_id));
+    conditions.push(eq(alerts.assetId, Number(asset_id)));
   }
 
-  const alerts = query(
-    `SELECT a.*, assets.symbol as asset_symbol, assets.name as asset_name, assets.type as asset_type
-     FROM alerts a
-     JOIN assets ON a.asset_id = assets.id
-     WHERE ${filters.join(' AND ')}
-     ORDER BY a.created_at DESC`,
-    params
-  ) as any[];
+  const alertList = db.select({
+    id: alerts.id,
+    userId: alerts.userId,
+    assetId: alerts.assetId,
+    alertType: alerts.alertType,
+    threshold: alerts.threshold,
+    isActive: alerts.isActive,
+    triggered: alerts.triggered,
+    triggeredAt: alerts.triggeredAt,
+    createdAt: alerts.createdAt,
+    updatedAt: alerts.updatedAt,
+    asset_symbol: assets.symbol,
+    asset_name: assets.name,
+    asset_type: assets.type,
+  })
+    .from(alerts)
+    .innerJoin(assets, eq(alerts.assetId, assets.id))
+    .where(and(...conditions))
+    .orderBy(desc(alerts.createdAt))
+    .all();
 
   const alertsWithPrices = await Promise.all(
-    alerts.map(async alert => {
+    alertList.map(async alert => {
       const currentPrice = await getAssetPrice(alert.asset_symbol, alert.asset_type);
       return { ...alert, current_price: currentPrice };
     })
@@ -91,8 +110,13 @@ router.put('/:id', (req, res) => {
   const userId = (req as any).user.id;
   const { id } = req.params;
   const { threshold, is_active } = req.body;
+  const db = getDB();
 
-  const existing = query('SELECT * FROM alerts WHERE id = ? AND user_id = ?', [Number(id), userId])[0] as any;
+  const existing = db.select()
+    .from(alerts)
+    .where(and(eq(alerts.id, Number(id)), eq(alerts.userId, userId)))
+    .get();
+
   if (!existing) {
     return res.status(404).json({ success: false, error: 'Alert not found' });
   }
@@ -102,18 +126,19 @@ router.put('/:id', (req, res) => {
   }
 
   const newThreshold = threshold ?? existing.threshold;
-  const newIsActive = is_active !== undefined ? (is_active ? 1 : 0) : existing.is_active;
+  const newIsActive = is_active !== undefined ? is_active : existing.isActive;
 
   try {
-    run(
-      `UPDATE alerts
-       SET threshold = ?, is_active = ?, updated_at = datetime('now')
-       WHERE id = ? AND user_id = ?`,
-      [newThreshold, newIsActive, Number(id), userId]
-    );
-    saveDB();
+    const updated = db.update(alerts)
+      .set({
+        threshold: newThreshold,
+        isActive: newIsActive,
+        updatedAt: sql`datetime('now')`,
+      })
+      .where(and(eq(alerts.id, Number(id)), eq(alerts.userId, userId)))
+      .returning()
+      .get();
 
-    const updated = query('SELECT * FROM alerts WHERE id = ?', [Number(id)])[0] as any;
     res.json({ success: true, alert: updated });
   } catch (error: any) {
     if (error.message?.includes('UNIQUE')) {
@@ -127,37 +152,57 @@ router.put('/:id', (req, res) => {
 router.delete('/:id', (req, res) => {
   const userId = (req as any).user.id;
   const { id } = req.params;
+  const db = getDB();
 
-  const existing = query('SELECT id FROM alerts WHERE id = ? AND user_id = ?', [Number(id), userId]);
-  if (existing.length === 0) {
+  const existing = db.select({ id: alerts.id })
+    .from(alerts)
+    .where(and(eq(alerts.id, Number(id)), eq(alerts.userId, userId)))
+    .get();
+
+  if (!existing) {
     return res.status(404).json({ success: false, error: 'Alert not found' });
   }
 
-  run('DELETE FROM alerts WHERE id = ? AND user_id = ?', [Number(id), userId]);
-  saveDB();
+  db.delete(alerts)
+    .where(and(eq(alerts.id, Number(id)), eq(alerts.userId, userId)))
+    .run();
+
   res.json({ success: true, message: 'Alert deleted' });
 });
 
 router.get('/:id/history', (req, res) => {
   const userId = (req as any).user.id;
   const { id } = req.params;
+  const db = getDB();
 
-  const alert = query(
-    `SELECT a.*, assets.symbol as asset_symbol, assets.name as asset_name
-     FROM alerts a
-     JOIN assets ON a.asset_id = assets.id
-     WHERE a.id = ? AND a.user_id = ?`,
-    [Number(id), userId]
-  )[0] as any;
+  const alert = db.select({
+    id: alerts.id,
+    userId: alerts.userId,
+    assetId: alerts.assetId,
+    alertType: alerts.alertType,
+    threshold: alerts.threshold,
+    isActive: alerts.isActive,
+    triggered: alerts.triggered,
+    triggeredAt: alerts.triggeredAt,
+    createdAt: alerts.createdAt,
+    updatedAt: alerts.updatedAt,
+    asset_symbol: assets.symbol,
+    asset_name: assets.name,
+  })
+    .from(alerts)
+    .innerJoin(assets, eq(alerts.assetId, assets.id))
+    .where(and(eq(alerts.id, Number(id)), eq(alerts.userId, userId)))
+    .get();
 
   if (!alert) {
     return res.status(404).json({ success: false, error: 'Alert not found' });
   }
 
-  const history = query(
-    'SELECT * FROM alert_notifications WHERE alert_id = ? ORDER BY notified_at DESC',
-    [Number(id)]
-  );
+  const history = db.select()
+    .from(alertNotifications)
+    .where(eq(alertNotifications.alertId, Number(id)))
+    .orderBy(desc(alertNotifications.notifiedAt))
+    .all();
 
   res.json({ success: true, alert, history });
 });

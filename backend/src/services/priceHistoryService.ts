@@ -1,4 +1,5 @@
-import { query, run, saveDB } from '../db/index.js';
+import { eq, and, gte, lte, min, max, isNull, sql, inArray } from 'drizzle-orm';
+import { getDB, priceSnapshots, holdings, assets, transactions, priceHistory } from '../db/index.js';
 import { getAssetPrice, getUSDCNYRate } from './priceService.js';
 
 export interface PortfolioSnapshot {
@@ -26,59 +27,74 @@ function toSqliteDateTimeMs(date: Date): string {
  */
 export async function recordDailySnapshot(userId: number): Promise<void> {
   const today = new Date().toISOString().split('T')[0];
+  const db = getDB();
 
   // Check if we already have a snapshot for today
-  const existing = query(
-    'SELECT id FROM price_snapshots WHERE snapshot_date = ? AND user_id = ?',
-    [today, userId]
-  );
-  if (existing.length > 0) {
+  const existing = db.select({ id: priceSnapshots.id })
+    .from(priceSnapshots)
+    .where(and(
+      eq(priceSnapshots.snapshotDate, today),
+      eq(priceSnapshots.userId, userId)
+    ))
+    .get();
+
+  if (existing) {
     console.log(`Snapshot for ${today} already exists, skipping`);
     return;
   }
 
   // Get all holdings with current prices
-  const holdings = query(`
-    SELECT h.quantity, h.avg_cost, a.symbol, a.type, a.currency, a.current_price
-    FROM holdings h
-    JOIN assets a ON h.asset_id = a.id
-    WHERE h.user_id = ?
-  `, [userId]);
+  const holdingList = db.select({
+    quantity: holdings.quantity,
+    avgCost: holdings.avgCost,
+    symbol: assets.symbol,
+    type: assets.type,
+    currency: assets.currency,
+    currentPrice: assets.currentPrice,
+  })
+    .from(holdings)
+    .innerJoin(assets, eq(holdings.assetId, assets.id))
+    .where(eq(holdings.userId, userId))
+    .all();
 
   const usdcny = await getUSDCNYRate() || 7.2;
-  
+
   let totalValueUSD = 0;
   let totalCostUSD = 0;
 
-  for (const h of holdings as any[]) {
-    let currentPrice = h.current_price;
-    
+  for (const h of holdingList) {
+    let currentPrice = h.currentPrice;
+
     // If no cached price, try to fetch (but don't wait)
     if (!currentPrice) {
       currentPrice = await getAssetPrice(h.symbol, h.type);
     }
-    
+
     if (currentPrice) {
       let valueUSD = currentPrice * h.quantity;
-      let costUSD = h.avg_cost * h.quantity;
-      
+      let costUSD = h.avgCost * h.quantity;
+
       if (h.currency === 'CNY') {
         valueUSD = valueUSD / usdcny;
         costUSD = costUSD / usdcny;
       }
-      
+
       totalValueUSD += valueUSD;
       totalCostUSD += costUSD;
     }
   }
 
   // Insert snapshot
-  run(
-    'INSERT INTO price_snapshots (user_id, snapshot_date, total_value_usd, total_cost_usd, usdcny_rate) VALUES (?, ?, ?, ?, ?)',
-    [userId, today, totalValueUSD, totalCostUSD, usdcny]
-  );
-  
-  saveDB();
+  db.insert(priceSnapshots)
+    .values({
+      userId,
+      snapshotDate: today,
+      totalValueUsd: totalValueUSD,
+      totalCostUsd: totalCostUSD,
+      usdcnyRate: usdcny,
+    })
+    .run();
+
   console.log(`Recorded portfolio snapshot for ${today}: $${totalValueUSD.toFixed(2)}`);
 }
 
@@ -87,12 +103,22 @@ export async function recordDailySnapshot(userId: number): Promise<void> {
  */
 export async function getPortfolioHistory(range: string, userId: number): Promise<PortfolioSnapshot[]> {
   const { startDate, endDate } = getDateRange(range, userId);
+  const db = getDB();
 
   // Get snapshots within the date range
-  const snapshots = query(
-    'SELECT snapshot_date as date, total_value_usd as value, total_cost_usd as cost FROM price_snapshots WHERE user_id = ? AND snapshot_date >= ? AND snapshot_date <= ? ORDER BY snapshot_date',
-    [userId, startDate, endDate]
-  ) as Array<{ date: string; value: number; cost: number }>;
+  const snapshots = db.select({
+    date: priceSnapshots.snapshotDate,
+    value: priceSnapshots.totalValueUsd,
+    cost: priceSnapshots.totalCostUsd,
+  })
+    .from(priceSnapshots)
+    .where(and(
+      eq(priceSnapshots.userId, userId),
+      gte(priceSnapshots.snapshotDate, startDate),
+      lte(priceSnapshots.snapshotDate, endDate)
+    ))
+    .orderBy(priceSnapshots.snapshotDate)
+    .all();
 
   // If we don't have enough snapshots, we need to estimate from transaction history
   if (snapshots.length < 2) {
@@ -103,27 +129,57 @@ export async function getPortfolioHistory(range: string, userId: number): Promis
   return snapshots.map(s => ({
     date: s.date,
     value: s.value,
-    cost: s.cost,
-    pnl: s.value - s.cost
+    cost: s.cost || 0,
+    pnl: s.value - (s.cost || 0)
   }));
 }
 
 /**
- * Get price history for a specific asset
+ * Get price history for a specific asset (global, not user-specific)
+ * Price history is shared across all users since prices are the same for everyone
+ * Prefers global prices (user_id = NULL), falls back to user-specific prices
  */
 export async function getAssetHistory(assetId: number, range: string, userId: number): Promise<AssetHistoryPoint[]> {
   const { startDate, endDate } = getDateRange(range, userId);
+  const db = getDB();
 
-  const history = query(
-    'SELECT DATE(timestamp) as date, price FROM price_history WHERE user_id = ? AND asset_id = ? AND DATE(timestamp) >= ? AND DATE(timestamp) <= ? ORDER BY timestamp',
-    [userId, assetId, startDate, endDate]
-  ) as Array<{ date: string; price: number }>;
+  // First try to get global prices (user_id IS NULL)
+  let history = db.select({
+    date: sql<string>`DATE(${priceHistory.timestamp})`,
+    price: priceHistory.price,
+  })
+    .from(priceHistory)
+    .where(and(
+      isNull(priceHistory.userId),
+      eq(priceHistory.assetId, assetId),
+      gte(sql`DATE(${priceHistory.timestamp})`, startDate),
+      lte(sql`DATE(${priceHistory.timestamp})`, endDate)
+    ))
+    .orderBy(priceHistory.timestamp)
+    .all();
+
+  // If no global records found, fall back to any available prices
+  if (history.length === 0) {
+    history = db.select({
+      date: sql<string>`DATE(${priceHistory.timestamp})`,
+      price: priceHistory.price,
+    })
+      .from(priceHistory)
+      .where(and(
+        eq(priceHistory.assetId, assetId),
+        gte(sql`DATE(${priceHistory.timestamp})`, startDate),
+        lte(sql`DATE(${priceHistory.timestamp})`, endDate)
+      ))
+      .orderBy(priceHistory.timestamp)
+      .all();
+  }
 
   return history;
 }
 
 /**
- * Record a price point for an asset
+ * Record a price point for an asset (as global, not user-specific)
+ * Prices should be recorded globally since they're the same for everyone
  */
 export function recordAssetPrice(assetId: number, price: number, userId: number): void {
   let nowMs = Date.now();
@@ -132,24 +188,45 @@ export function recordAssetPrice(assetId: number, price: number, userId: number)
   }
   lastPriceTimestampMs = nowMs;
   const timestamp = toSqliteDateTimeMs(new Date(nowMs));
-  run(
-    'INSERT INTO price_history (user_id, asset_id, price, timestamp) VALUES (?, ?, ?, ?)',
-    [userId, assetId, price, timestamp]
-  );
-  saveDB();
+  const db = getDB();
+
+  // Record as global price (user_id = NULL) since prices are the same for all users
+  db.insert(priceHistory)
+    .values({
+      userId: null,
+      assetId,
+      price,
+      timestamp,
+    })
+    .run();
 }
 
 /**
  * Record a price point at a specific timestamp (ms since epoch).
  * Uses INSERT OR IGNORE to avoid duplicate (asset_id, timestamp).
+ * Records as global price (user_id = NULL) since prices are the same for all users
  */
 export function recordAssetPriceAt(assetId: number, price: number, timestampMs: number, userId: number): void {
   const timestamp = toSqliteDateTimeMs(new Date(timestampMs));
-  run(
-    'INSERT OR IGNORE INTO price_history (user_id, asset_id, price, timestamp) VALUES (?, ?, ?, ?)',
-    [userId, assetId, price, timestamp]
-  );
-  saveDB();
+  const db = getDB();
+
+  // Record as global price (user_id = NULL) since prices are the same for all users
+  // Using onConflictDoNothing for INSERT OR IGNORE behavior
+  try {
+    db.insert(priceHistory)
+      .values({
+        userId: null,
+        assetId,
+        price,
+        timestamp,
+      })
+      .run();
+  } catch (e: any) {
+    // Ignore unique constraint violations
+    if (!e.message?.includes('UNIQUE')) {
+      throw e;
+    }
+  }
 }
 
 /**
@@ -158,7 +235,8 @@ export function recordAssetPriceAt(assetId: number, price: number, timestampMs: 
 function getDateRange(range: string, _userId?: number): { startDate: string; endDate: string } {
   const endDate = new Date();
   const startDate = new Date();
-  
+  const db = getDB();
+
   switch (range) {
     case '1D':
       startDate.setDate(endDate.getDate() - 1);
@@ -184,19 +262,22 @@ function getDateRange(range: string, _userId?: number): { startDate: string; end
       break;
     case 'ALL':
       // Get the earliest transaction date
-      const earliest = query(
-        'SELECT MIN(date) as min_date FROM transactions WHERE user_id = ?',
-        [_userId]
-      );
-      if (earliest.length > 0 && earliest[0].min_date) {
-        return { startDate: earliest[0].min_date as string, endDate: endDate.toISOString().split('T')[0] };
+      if (_userId) {
+        const earliest = db.select({ minDate: min(transactions.date) })
+          .from(transactions)
+          .where(eq(transactions.userId, _userId))
+          .get();
+
+        if (earliest?.minDate) {
+          return { startDate: earliest.minDate, endDate: endDate.toISOString().split('T')[0] };
+        }
       }
       startDate.setFullYear(endDate.getFullYear() - 5);
       break;
     default:
       startDate.setMonth(endDate.getMonth() - 1); // Default to 1M
   }
-  
+
   return {
     startDate: startDate.toISOString().split('T')[0],
     endDate: endDate.toISOString().split('T')[0]
@@ -212,60 +293,82 @@ async function generatePortfolioHistoryFromTransactions(
   endDate: string,
   userId: number
 ): Promise<PortfolioSnapshot[]> {
+  const db = getDB();
+
   // Get all transactions in the date range
-  const transactions = query(`
-    SELECT t.date, t.type, t.quantity, t.price, a.currency
-    FROM transactions t
-    JOIN assets a ON t.asset_id = a.id
-    WHERE t.user_id = ? AND t.date >= ? AND t.date <= ?
-    ORDER BY t.date
-  `, [userId, startDate, endDate]) as Array<{ date: string; type: string; quantity: number; price: number; currency: string }>;
+  const txnList = db.select({
+    date: transactions.date,
+    type: transactions.type,
+    quantity: transactions.quantity,
+    price: transactions.price,
+    currency: assets.currency,
+  })
+    .from(transactions)
+    .innerJoin(assets, eq(transactions.assetId, assets.id))
+    .where(and(
+      eq(transactions.userId, userId),
+      gte(transactions.date, startDate),
+      lte(transactions.date, endDate)
+    ))
+    .orderBy(transactions.date)
+    .all();
 
   // Get current holdings for reference
-  const holdings = query(`
-    SELECT h.quantity, h.avg_cost, a.id as asset_id, a.currency
-    FROM holdings h
-    JOIN assets a ON h.asset_id = a.id
-    WHERE h.user_id = ?
-  `, [userId]) as Array<{ quantity: number; avg_cost: number; asset_id: number; currency: string }>;
+  const holdingList = db.select({
+    quantity: holdings.quantity,
+    avgCost: holdings.avgCost,
+    assetId: assets.id,
+    currency: assets.currency,
+  })
+    .from(holdings)
+    .innerJoin(assets, eq(holdings.assetId, assets.id))
+    .where(eq(holdings.userId, userId))
+    .all();
 
-  // Get current prices
-  const assets = query(
-    `SELECT id, symbol, type, current_price, currency
-     FROM assets
-     WHERE id IN (
-       SELECT asset_id FROM holdings WHERE user_id = ?
-       UNION
-       SELECT asset_id FROM transactions WHERE user_id = ?
-     )`,
-    [userId, userId]
-  ) as Array<{
-    id: number;
-    symbol: string;
-    type: string;
-    current_price: number;
-    currency: string;
-  }>;
+  // Get asset IDs from both holdings and transactions
+  const holdingAssetIds = holdingList.map(h => h.assetId);
+  const txnAssetIds = db.select({ assetId: transactions.assetId })
+    .from(transactions)
+    .where(eq(transactions.userId, userId))
+    .all()
+    .map(t => t.assetId)
+    .filter((id): id is number => id !== null);
+
+  const allAssetIds = [...new Set([...holdingAssetIds, ...txnAssetIds])];
+
+  // Get current prices for relevant assets
+  const assetList = allAssetIds.length > 0
+    ? db.select({
+        id: assets.id,
+        symbol: assets.symbol,
+        type: assets.type,
+        currentPrice: assets.currentPrice,
+        currency: assets.currency,
+      })
+        .from(assets)
+        .where(inArray(assets.id, allAssetIds))
+        .all()
+    : [];
 
   const usdcny = await getUSDCNYRate() || 7.2;
-  
+
   // Calculate current total value and cost
   let currentTotalValue = 0;
   let currentTotalCost = 0;
-  
-  const assetMap = new Map(assets.map(a => [a.id, a]));
-  
-  for (const h of holdings) {
-    const asset = assetMap.get(h.asset_id);
-    if (asset && asset.current_price) {
-      let value = asset.current_price * h.quantity;
-      let cost = h.avg_cost * h.quantity;
-      
+
+  const assetMap = new Map(assetList.map(a => [a.id, a]));
+
+  for (const h of holdingList) {
+    const asset = assetMap.get(h.assetId);
+    if (asset && asset.currentPrice) {
+      let value = asset.currentPrice * h.quantity;
+      let cost = h.avgCost * h.quantity;
+
       if (asset.currency === 'CNY') {
         value = value / usdcny;
         cost = cost / usdcny;
       }
-      
+
       currentTotalValue += value;
       currentTotalCost += cost;
     }
@@ -285,16 +388,23 @@ async function generatePortfolioHistoryFromTransactions(
  * Get the available date range for portfolio history
  */
 export function getAvailableHistoryRange(userId: number): { earliest: string | null; latest: string | null } {
-  const result = query(
-    'SELECT MIN(snapshot_date) as earliest, MAX(snapshot_date) as latest FROM price_snapshots WHERE user_id = ?',
-    [userId]
-  );
-  if (result.length === 0) {
+  const db = getDB();
+
+  const result = db.select({
+    earliest: min(priceSnapshots.snapshotDate),
+    latest: max(priceSnapshots.snapshotDate),
+  })
+    .from(priceSnapshots)
+    .where(eq(priceSnapshots.userId, userId))
+    .get();
+
+  if (!result) {
     return { earliest: null, latest: null };
   }
+
   return {
-    earliest: result[0].earliest as string || null,
-    latest: result[0].latest as string || null
+    earliest: result.earliest || null,
+    latest: result.latest || null
   };
 }
 
@@ -304,7 +414,9 @@ export function getAvailableHistoryRange(userId: number): { earliest: string | n
 export function cleanupOldSnapshots(keepDays: number = 365 * 5): void {
   const cutoffDate = new Date();
   cutoffDate.setDate(cutoffDate.getDate() - keepDays);
-  
-  run('DELETE FROM price_snapshots WHERE snapshot_date < ?', [cutoffDate.toISOString().split('T')[0]]);
-  saveDB();
+  const db = getDB();
+
+  db.delete(priceSnapshots)
+    .where(lte(priceSnapshots.snapshotDate, cutoffDate.toISOString().split('T')[0]))
+    .run();
 }
