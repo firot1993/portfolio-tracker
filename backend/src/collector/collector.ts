@@ -44,7 +44,7 @@ function startRun(runType: RunType, runKey: string, userId: number): number {
     db.update(collectorRuns)
       .set({
         status: 'running',
-        startedAt: sql`datetime("now")`,
+        startedAt: sql`datetime('now')`,
         finishedAt: null,
         errorMessage: null,
       })
@@ -75,7 +75,7 @@ function finishRun(id: number, status: RunStatus, errorMessage?: string): void {
   db.update(collectorRuns)
     .set({
       status,
-      finishedAt: sql`datetime("now")`,
+      finishedAt: sql`datetime('now')`,
       errorMessage: errorMessage || null,
     })
     .where(eq(collectorRuns.id, id))
@@ -375,7 +375,7 @@ export async function runQueuedBackfills(userId: number): Promise<void> {
     db.update(backfillJobs)
       .set({
         status: jobStatus,
-        completedAt: sql`datetime("now")`,
+        completedAt: sql`datetime('now')`,
         errorMessage: jobError || null,
       })
       .where(eq(backfillJobs.id, job.id))

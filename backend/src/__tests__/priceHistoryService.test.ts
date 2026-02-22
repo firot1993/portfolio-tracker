@@ -24,16 +24,20 @@ describe('Price History Service', () => {
   beforeAll(async () => {
     await initDB(true);
     // Create a test user
-    run('INSERT OR IGNORE INTO users (id, email, password_hash) VALUES (1, "test@portfolio.local", "hash")');
+    run('INSERT OR IGNORE INTO users (id, email, password_hash) VALUES (?, ?, ?)', [1, 'test@portfolio.local', 'hash']);
   });
 
   beforeEach(() => {
     // Clean up snapshots
     run('DELETE FROM price_snapshots WHERE user_id = ?', [TEST_USER_ID]);
-    run('DELETE FROM price_history WHERE user_id = ?', [TEST_USER_ID]);
+    run('DELETE FROM price_history');
     run('DELETE FROM transactions WHERE user_id = ?', [TEST_USER_ID]);
     run('DELETE FROM holdings WHERE user_id = ?', [TEST_USER_ID]);
-    run('DELETE FROM assets WHERE user_id IS NULL OR user_id = ?', [TEST_USER_ID]);
+    run('DELETE FROM alert_notifications');
+    run('DELETE FROM alerts');
+    run('DELETE FROM backfill_jobs WHERE user_id = ?', [TEST_USER_ID]);
+    run('DELETE FROM collector_runs WHERE user_id = ?', [TEST_USER_ID]);
+    run('DELETE FROM assets');
   });
 
   describe('recordDailySnapshot', () => {
@@ -127,8 +131,8 @@ describe('Price History Service', () => {
   describe('getAssetHistory', () => {
     it('should return asset price history', async () => {
       // Create test asset
-      run('INSERT INTO assets (user_id, symbol, name, type) VALUES (?, ?, ?, ?)', [TEST_USER_ID, 'TEST', 'Test Asset', 'crypto']);
-      const asset = query('SELECT id FROM assets WHERE symbol = ? AND user_id = ?', ['TEST', TEST_USER_ID])[0] as { id: number };
+      run('INSERT INTO assets (symbol, name, type) VALUES (?, ?, ?)', ['TEST', 'Test Asset', 'crypto']);
+      const asset = query('SELECT id FROM assets WHERE symbol = ?', ['TEST'])[0] as { id: number };
 
       // Record some prices
       recordAssetPrice(asset.id, 100, TEST_USER_ID);
@@ -140,8 +144,8 @@ describe('Price History Service', () => {
 
     it('should return empty array for asset with no history', async () => {
       // Create test asset without history
-      run('INSERT INTO assets (user_id, symbol, name, type) VALUES (?, ?, ?, ?)', [TEST_USER_ID, 'TESTNOHIST', 'Test No History', 'crypto']);
-      const asset = query('SELECT id FROM assets WHERE symbol = ? AND user_id = ?', ['TESTNOHIST', TEST_USER_ID])[0] as { id: number };
+      run('INSERT INTO assets (symbol, name, type) VALUES (?, ?, ?)', ['TESTNOHIST', 'Test No History', 'crypto']);
+      const asset = query('SELECT id FROM assets WHERE symbol = ?', ['TESTNOHIST'])[0] as { id: number };
 
       const history = await getAssetHistory(asset.id, '1M', TEST_USER_ID);
       expect(Array.isArray(history)).toBe(true);
@@ -152,8 +156,8 @@ describe('Price History Service', () => {
   describe('recordAssetPrice', () => {
     it.skip('should record asset price', () => {
       // Create test asset
-      run('INSERT INTO assets (user_id, symbol, name, type) VALUES (?, ?, ?, ?)', [TEST_USER_ID, 'TESTREC', 'Test Record', 'crypto']);
-      const asset = query('SELECT id FROM assets WHERE symbol = ? AND user_id = ?', ['TESTREC', TEST_USER_ID])[0] as { id: number };
+      run('INSERT INTO assets (symbol, name, type) VALUES (?, ?, ?)', ['TESTREC', 'Test Record', 'crypto']);
+      const asset = query('SELECT id FROM assets WHERE symbol = ?', ['TESTREC'])[0] as { id: number };
 
       recordAssetPrice(asset.id, 150.5, TEST_USER_ID);
 
