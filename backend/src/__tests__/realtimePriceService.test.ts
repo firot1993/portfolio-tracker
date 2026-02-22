@@ -32,9 +32,9 @@ describe('RealtimePriceService', () => {
   beforeAll(async () => {
     await initDB(true);
     // Create a test user
-    run('INSERT OR IGNORE INTO users (id, email, password_hash) VALUES (1, "test@portfolio.local", "hash")');
+    run('INSERT OR IGNORE INTO users (id, email, password_hash) VALUES (?, ?, ?)', [1, 'test@portfolio.local', 'hash']);
     // Create a test account
-    run('INSERT OR IGNORE INTO accounts (id, user_id, name, type, currency) VALUES (1, 1, "Test Account", "exchange", "USD")');
+    run('INSERT OR IGNORE INTO accounts (id, user_id, name, type, currency) VALUES (?, ?, ?, ?, ?)', [1, 1, 'Test Account', 'exchange', 'USD']);
   });
 
   beforeEach(() => {
@@ -104,8 +104,8 @@ describe('RealtimePriceService', () => {
 
   describe('loadTrackedAssets', () => {
     it('loads assets with holdings from database', () => {
-      run('INSERT INTO assets (id, user_id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?, ?)',
-        [1, TEST_USER_ID, 'BTC', 'Bitcoin', 'crypto', 'USD']);
+      run('INSERT INTO assets (id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?)',
+        [1, 'BTC', 'Bitcoin', 'crypto', 'USD']);
       run('INSERT INTO holdings (id, user_id, account_id, asset_id, quantity, avg_cost) VALUES (?, ?, ?, ?, ?, ?)',
         [1, TEST_USER_ID, 1, 1, 1.5, 30000]);
 
@@ -122,8 +122,8 @@ describe('RealtimePriceService', () => {
     });
 
     it('loads US stock assets with normalized symbols', () => {
-      run('INSERT INTO assets (id, user_id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?, ?)',
-        [2, TEST_USER_ID, 'AAPL', 'Apple Inc', 'stock_us', 'USD']);
+      run('INSERT INTO assets (id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?)',
+        [2, 'AAPL', 'Apple Inc', 'stock_us', 'USD']);
       run('INSERT INTO holdings (id, user_id, account_id, asset_id, quantity, avg_cost) VALUES (?, ?, ?, ?, ?, ?)',
         [2, TEST_USER_ID, 1, 2, 100, 150]);
 
@@ -140,8 +140,8 @@ describe('RealtimePriceService', () => {
     });
 
     it('only loads assets with positive quantity holdings', () => {
-      run('INSERT INTO assets (id, user_id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?, ?)',
-        [1, TEST_USER_ID, 'BTC', 'Bitcoin', 'crypto', 'USD']);
+      run('INSERT INTO assets (id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?)',
+        [1, 'BTC', 'Bitcoin', 'crypto', 'USD']);
       run('INSERT INTO holdings (id, user_id, account_id, asset_id, quantity, avg_cost) VALUES (?, ?, ?, ?, ?, ?)',
         [1, TEST_USER_ID, 1, 1, 0, 30000]);
 
@@ -154,8 +154,8 @@ describe('RealtimePriceService', () => {
     it('limits crypto assets to MAX_CRYPTO_TICKS', () => {
       // Insert more than 10 crypto assets
       for (let i = 1; i <= 15; i++) {
-        run('INSERT INTO assets (id, user_id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?, ?)',
-          [i, TEST_USER_ID, `CRYPTO${i}`, `Crypto ${i}`, 'crypto', 'USD']);
+        run('INSERT INTO assets (id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?)',
+          [i, `CRYPTO${i}`, `Crypto ${i}`, 'crypto', 'USD']);
         run('INSERT INTO holdings (id, user_id, account_id, asset_id, quantity, avg_cost) VALUES (?, ?, ?, ?, ?, ?)',
           [i, TEST_USER_ID, 1, i, 1, 100]);
       }
@@ -170,8 +170,8 @@ describe('RealtimePriceService', () => {
     it('limits US stock assets to MAX_STOCK_US_TICKS', () => {
       // Insert more than 20 stock assets
       for (let i = 1; i <= 25; i++) {
-        run('INSERT INTO assets (id, user_id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?, ?)',
-          [i, TEST_USER_ID, `STOCK${i}`, `Stock ${i}`, 'stock_us', 'USD']);
+        run('INSERT INTO assets (id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?)',
+          [i, `STOCK${i}`, `Stock ${i}`, 'stock_us', 'USD']);
         run('INSERT INTO holdings (id, user_id, account_id, asset_id, quantity, avg_cost) VALUES (?, ?, ?, ?, ?, ?)',
           [i, TEST_USER_ID, 1, i, 1, 100]);
       }
@@ -406,8 +406,8 @@ describe('RealtimePriceService', () => {
 
     it('parses IEX array message and updates current price', () => {
       run(
-        'INSERT INTO assets (id, user_id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?, ?)',
-        [1, TEST_USER_ID, 'NVDA', 'NVIDIA', 'stock_us', 'USD']
+        'INSERT INTO assets (id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?)',
+        [1, 'NVDA', 'NVIDIA', 'stock_us', 'USD']
       );
 
       (realtimePriceService as any).trackedAssets.set(1, {
@@ -434,8 +434,8 @@ describe('RealtimePriceService', () => {
 
     it('parses IEX batch array messages', () => {
       run(
-        'INSERT INTO assets (id, user_id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?, ?)',
-        [2, TEST_USER_ID, 'NVDA', 'NVIDIA', 'stock_us', 'USD']
+        'INSERT INTO assets (id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?)',
+        [2, 'NVDA', 'NVIDIA', 'stock_us', 'USD']
       );
 
       (realtimePriceService as any).trackedAssets.set(2, {
@@ -563,8 +563,8 @@ describe('RealtimePriceService', () => {
     });
 
     it('throttles database writes', () => {
-      run('INSERT INTO assets (id, user_id, symbol, name, type, currency, current_price) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [1, TEST_USER_ID, 'BTC', 'Bitcoin', 'crypto', 'USD', 40000]);
+      run('INSERT INTO assets (id, symbol, name, type, currency, current_price) VALUES (?, ?, ?, ?, ?, ?)',
+        [1, 'BTC', 'Bitcoin', 'crypto', 'USD', 40000]);
 
       const now = Date.now();
       (realtimePriceService as any).priceUpdateThrottle.clear();
@@ -581,8 +581,8 @@ describe('RealtimePriceService', () => {
     });
 
     it('allows update after throttle period', () => {
-      run('INSERT INTO assets (id, user_id, symbol, name, type, currency, current_price) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [1, TEST_USER_ID, 'BTC', 'Bitcoin', 'crypto', 'USD', 40000]);
+      run('INSERT INTO assets (id, symbol, name, type, currency, current_price) VALUES (?, ?, ?, ?, ?, ?)',
+        [1, 'BTC', 'Bitcoin', 'crypto', 'USD', 40000]);
 
       const now = Date.now();
       (realtimePriceService as any).priceUpdateThrottle.clear();
@@ -604,8 +604,8 @@ describe('RealtimePriceService', () => {
 
     it.skip('records 15-minute bucket start/end points in price history', () => {
       run(
-        'INSERT INTO assets (id, user_id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?, ?)',
-        [3, TEST_USER_ID, 'NVDA', 'NVIDIA', 'stock_us', 'USD']
+        'INSERT INTO assets (id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?)',
+        [3, 'NVDA', 'NVIDIA', 'stock_us', 'USD']
       );
 
       (realtimePriceService as any).trackedAssets.set(3, {
@@ -684,8 +684,8 @@ describe('RealtimePriceService', () => {
     });
 
     it.skip('ignores out-of-order timestamps', () => {
-      run('INSERT INTO assets (id, user_id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?, ?)',
-        [1, TEST_USER_ID, 'BTC', 'Bitcoin', 'crypto', 'USD']);
+      run('INSERT INTO assets (id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?)',
+        [1, 'BTC', 'Bitcoin', 'crypto', 'USD']);
 
       (realtimePriceService as any).trackedAssets.set(1, {
         id: 1,
@@ -713,8 +713,8 @@ describe('RealtimePriceService', () => {
     });
 
     it.skip('records start of bucket if not started', () => {
-      run('INSERT INTO assets (id, user_id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?, ?)',
-        [1, TEST_USER_ID, 'BTC', 'Bitcoin', 'crypto', 'USD']);
+      run('INSERT INTO assets (id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?)',
+        [1, 'BTC', 'Bitcoin', 'crypto', 'USD']);
 
       (realtimePriceService as any).trackedAssets.set(1, {
         id: 1,

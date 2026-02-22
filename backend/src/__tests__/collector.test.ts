@@ -16,7 +16,7 @@ describe('Collector', () => {
   beforeAll(async () => {
     await initDB(true);
     // Create a test user
-    run('INSERT OR IGNORE INTO users (id, email, password_hash) VALUES (1, "test@portfolio.local", "hash")');
+    run('INSERT OR IGNORE INTO users (id, email, password_hash) VALUES (?, ?, ?)', [1, 'test@portfolio.local', 'hash']);
   });
 
   beforeEach(() => {
@@ -24,17 +24,20 @@ describe('Collector', () => {
     mockGetHistoricalDailyPrices.mockClear();
 
     run('DELETE FROM collector_runs WHERE user_id = ?', [TEST_USER_ID]);
+    run('DELETE FROM backfill_jobs WHERE user_id = ?', [TEST_USER_ID]);
     run('DELETE FROM price_snapshots WHERE user_id = ?', [TEST_USER_ID]);
     run('DELETE FROM price_history WHERE user_id = ?', [TEST_USER_ID]);
     run('DELETE FROM transactions WHERE user_id = ?', [TEST_USER_ID]);
     run('DELETE FROM holdings WHERE user_id = ?', [TEST_USER_ID]);
-    run('DELETE FROM assets WHERE user_id IS NULL OR user_id = ?', [TEST_USER_ID]);
+    run('DELETE FROM alert_notifications');
+    run('DELETE FROM alerts');
+    run('DELETE FROM assets');
   });
 
   it('runDailyCollector records a snapshot without bulk price fetching', async () => {
     run(
-      'INSERT INTO assets (id, user_id, symbol, name, type, currency, current_price) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [1, TEST_USER_ID, 'BTC', 'Bitcoin', 'crypto', 'USD', 50000]
+      'INSERT INTO assets (id, symbol, name, type, currency, current_price) VALUES (?, ?, ?, ?, ?, ?)',
+      [1, 'BTC', 'Bitcoin', 'crypto', 'USD', 50000]
     );
     run(
       'INSERT INTO holdings (id, user_id, asset_id, quantity, avg_cost) VALUES (?, ?, ?, ?, ?)',
@@ -51,8 +54,8 @@ describe('Collector', () => {
 
   it('runBackfill uses historical API and writes price history', async () => {
     run(
-      'INSERT INTO assets (id, user_id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?, ?)',
-      [2, TEST_USER_ID, 'NVDA', 'NVIDIA', 'stock_us', 'USD']
+      'INSERT INTO assets (id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?)',
+      [2, 'NVDA', 'NVIDIA', 'stock_us', 'USD']
     );
 
     mockGetHistoricalDailyPrices.mockResolvedValue([
