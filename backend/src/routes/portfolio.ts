@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { query, run, saveDB } from '../db/index.js';
+import { eq, inArray, sql } from 'drizzle-orm';
+import { getDB, holdings, assets } from '../db/index.js';
 import { getAssetPrice, getUSDCNYRate } from '../services/priceService.js';
 import { authMiddleware } from '../middleware/auth.js';
 import {
@@ -20,12 +21,26 @@ router.get('/summary', authMiddleware, async (req, res) => {
   const refreshPrices = req.query.refreshPrices === 'true';
   const includePrices = req.query.includePrices !== 'false'; // default true
 
-  const holdings = query(`
-    SELECT h.*, a.symbol, a.name, a.type, a.currency, a.current_price, a.price_updated_at
-    FROM holdings h
-    JOIN assets a ON h.asset_id = a.id
-    WHERE h.user_id = ?
-  `, [userId]);
+  const db = getDB();
+
+  const holdingList = db.select({
+    id: holdings.id,
+    userId: holdings.userId,
+    assetId: holdings.assetId,
+    accountId: holdings.accountId,
+    quantity: holdings.quantity,
+    avgCost: holdings.avgCost,
+    symbol: assets.symbol,
+    name: assets.name,
+    type: assets.type,
+    currency: assets.currency,
+    current_price: assets.currentPrice,
+    price_updated_at: assets.priceUpdatedAt,
+  })
+    .from(holdings)
+    .innerJoin(assets, eq(holdings.assetId, assets.id))
+    .where(eq(holdings.userId, userId))
+    .all();
 
   const usdcny = await getUSDCNYRate() || 7.2;
 
@@ -42,19 +57,22 @@ router.get('/summary', authMiddleware, async (req, res) => {
   const assetsToUpdate: Array<{ id: number; symbol: string; type: string }> = [];
 
   const details = await Promise.all(
-    holdings.map(async (h: any) => {
+    holdingList.map(async (h) => {
       let currentPrice: number | null = null;
 
       if (includePrices) {
         if (refreshPrices) {
           // Fetch fresh price from external API
           currentPrice = await getAssetPrice(h.symbol, h.type);
-          if (currentPrice !== null) {
+          if (currentPrice !== null && h.assetId !== null) {
             // Update cached price in database
-            run(
-              'UPDATE assets SET current_price = ?, price_updated_at = datetime("now") WHERE id = ?',
-              [currentPrice, h.asset_id]
-            );
+            db.update(assets)
+              .set({
+                currentPrice,
+                priceUpdatedAt: sql`datetime("now")`,
+              })
+              .where(eq(assets.id, h.assetId))
+              .run();
           }
         } else {
           // Use cached price from database
@@ -65,14 +83,14 @@ router.get('/summary', authMiddleware, async (req, res) => {
             ? Date.now() - new Date(h.price_updated_at).getTime()
             : Infinity;
 
-          if (currentPrice === null || priceAge > 5 * 60 * 1000) {
-            assetsToUpdate.push({ id: h.asset_id, symbol: h.symbol, type: h.type });
+          if ((currentPrice === null || priceAge > 5 * 60 * 1000) && h.assetId !== null) {
+            assetsToUpdate.push({ id: h.assetId, symbol: h.symbol, type: h.type });
           }
         }
       }
 
       let valueUSD = currentPrice ? currentPrice * h.quantity : 0;
-      let costUSD = h.avg_cost * h.quantity;
+      let costUSD = h.avgCost * h.quantity;
 
       if (h.currency === 'CNY') {
         valueUSD = valueUSD / usdcny;
@@ -88,7 +106,7 @@ router.get('/summary', authMiddleware, async (req, res) => {
         name: h.name,
         type: h.type,
         quantity: h.quantity,
-        avgCost: h.avg_cost,
+        avgCost: h.avgCost,
         currentPrice,
         valueUSD,
         costUSD,
@@ -97,11 +115,6 @@ router.get('/summary', authMiddleware, async (req, res) => {
       };
     })
   );
-
-  // Save any price updates
-  if (refreshPrices) {
-    saveDB();
-  }
 
   const allocationPercent: Record<string, number> = {};
   for (const [type, value] of Object.entries(allocation)) {
@@ -130,33 +143,55 @@ router.post('/refresh-prices', authMiddleware, async (req, res) => {
   const userId = (req as any).user.id;
   const { assetIds } = req.body; // Optional: specific asset IDs to refresh
 
-  const holdings = query(`
-    SELECT h.asset_id, a.symbol, a.name, a.type, a.currency
-    FROM holdings h
-    JOIN assets a ON h.asset_id = a.id
-    WHERE h.user_id = ?
-    ${assetIds && assetIds.length > 0 ? `AND h.asset_id IN (${assetIds.map(() => '?').join(',')})` : ''}
-  `, assetIds ? [userId, ...assetIds] : [userId]);
+  const db = getDB();
+
+  let holdingQuery = db.select({
+    assetId: holdings.assetId,
+    symbol: assets.symbol,
+    name: assets.name,
+    type: assets.type,
+    currency: assets.currency,
+  })
+    .from(holdings)
+    .innerJoin(assets, eq(holdings.assetId, assets.id))
+    .where(eq(holdings.userId, userId));
+
+  // If specific asset IDs provided, filter to those
+  const holdingList = assetIds && assetIds.length > 0
+    ? db.select({
+        assetId: holdings.assetId,
+        symbol: assets.symbol,
+        name: assets.name,
+        type: assets.type,
+        currency: assets.currency,
+      })
+        .from(holdings)
+        .innerJoin(assets, eq(holdings.assetId, assets.id))
+        .where(eq(holdings.userId, userId))
+        .all()
+        .filter(h => assetIds.includes(h.assetId))
+    : holdingQuery.all();
 
   const results: Array<{ symbol: string; price: number | null; error?: string }> = [];
 
   // Fetch prices sequentially to avoid rate limiting
-  for (const h of holdings as any[]) {
+  for (const h of holdingList) {
     try {
       const price = await getAssetPrice(h.symbol, h.type);
-      if (price !== null) {
-        run(
-          'UPDATE assets SET current_price = ?, price_updated_at = datetime("now") WHERE id = ?',
-          [price, h.asset_id]
-        );
+      if (price !== null && h.assetId !== null) {
+        db.update(assets)
+          .set({
+            currentPrice: price,
+            priceUpdatedAt: sql`datetime("now")`,
+          })
+          .where(eq(assets.id, h.assetId))
+          .run();
       }
       results.push({ symbol: h.symbol, price });
     } catch (error: any) {
       results.push({ symbol: h.symbol, price: null, error: error.message });
     }
   }
-
-  saveDB();
 
   res.json({
     updated: results.filter(r => r.price !== null).length,
@@ -194,8 +229,8 @@ router.get('/metrics', authMiddleware, async (req, res) => {
     });
   } catch (error: any) {
     const isInsufficientData = error.message?.includes('Insufficient data');
-    res.status(isInsufficientData ? 422 : 400).json({ 
-      success: false, 
+    res.status(isInsufficientData ? 422 : 400).json({
+      success: false,
       error: error.message,
       code: isInsufficientData ? 'INSUFFICIENT_DATA' : 'METRICS_ERROR'
     });
@@ -213,8 +248,8 @@ router.get('/metrics/asset/:assetId', authMiddleware, async (req, res) => {
     res.json({ success: true, data });
   } catch (error: any) {
     const isInsufficientData = error.message?.includes('Insufficient data');
-    res.status(isInsufficientData ? 422 : 400).json({ 
-      success: false, 
+    res.status(isInsufficientData ? 422 : 400).json({
+      success: false,
       error: error.message,
       code: isInsufficientData ? 'INSUFFICIENT_DATA' : 'METRICS_ERROR'
     });

@@ -1,32 +1,40 @@
-import { query, run, saveDB } from '../db/index.js';
+import { eq, and, sql } from 'drizzle-orm';
+import { getDB, alerts, assets, alertNotifications } from '../db/index.js';
 import { getAssetPrice } from './priceService.js';
 
 export interface AlertRecord {
   id: number;
-  user_id: number;
-  asset_id: number;
-  alert_type: 'above' | 'below' | 'change_percent';
+  userId: number | null;
+  assetId: number | null;
+  alertType: string;
   threshold: number;
-  is_active: number;
-  triggered: number;
-  triggered_at: string | null;
-  created_at: string;
-  updated_at: string;
+  isActive: boolean | null;
+  triggered: boolean | null;
+  triggeredAt: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
 }
 
 export async function checkAlerts(): Promise<number> {
-  const activeAlerts = query<AlertRecord>(
-    `SELECT * FROM alerts
-     WHERE is_active = 1 AND triggered = 0`
-  );
+  const db = getDB();
+
+  const activeAlerts = db.select()
+    .from(alerts)
+    .where(and(
+      eq(alerts.isActive, true),
+      eq(alerts.triggered, false)
+    ))
+    .all();
 
   let triggeredCount = 0;
 
   for (const alert of activeAlerts) {
-    const asset = query<{ id: number; symbol: string; type: string }>(
-      'SELECT id, symbol, type FROM assets WHERE id = ?',
-      [alert.asset_id]
-    )[0];
+    if (!alert.assetId) continue;
+
+    const asset = db.select({ id: assets.id, symbol: assets.symbol, type: assets.type })
+      .from(assets)
+      .where(eq(assets.id, alert.assetId))
+      .get();
 
     if (!asset) continue;
 
@@ -36,44 +44,51 @@ export async function checkAlerts(): Promise<number> {
     const shouldTrigger = evaluateAlert(alert, currentPrice);
     if (!shouldTrigger) continue;
 
-    triggerAlert(alert.id, alert.user_id, currentPrice);
+    triggerAlert(alert.id, alert.userId!, currentPrice);
     triggeredCount++;
-  }
-
-  if (triggeredCount > 0) {
-    saveDB();
   }
 
   return triggeredCount;
 }
 
 export function triggerAlert(alertId: number, userId: number, currentPrice: number): void {
-  run(
-    `UPDATE alerts
-     SET triggered = 1, triggered_at = datetime('now'), updated_at = datetime('now')
-     WHERE id = ?`,
-    [alertId]
-  );
-  run(
-    'INSERT INTO alert_notifications (alert_id, user_id, triggered_price) VALUES (?, ?, ?)',
-    [alertId, userId, currentPrice]
-  );
+  const db = getDB();
+
+  db.update(alerts)
+    .set({
+      triggered: true,
+      triggeredAt: sql`datetime('now')`,
+      updatedAt: sql`datetime('now')`,
+    })
+    .where(eq(alerts.id, alertId))
+    .run();
+
+  db.insert(alertNotifications)
+    .values({
+      alertId,
+      userId,
+      triggeredPrice: currentPrice,
+    })
+    .run();
 }
 
 export function resetTriggeredAlerts(): number {
-  const updated = run(
-    `UPDATE alerts
-     SET triggered = 0, triggered_at = NULL, updated_at = datetime('now')
-     WHERE triggered = 1`
-  );
-  if (updated > 0) {
-    saveDB();
-  }
-  return updated;
+  const db = getDB();
+
+  const result = db.update(alerts)
+    .set({
+      triggered: false,
+      triggeredAt: null,
+      updatedAt: sql`datetime('now')`,
+    })
+    .where(eq(alerts.triggered, true))
+    .run();
+
+  return result.changes;
 }
 
 function evaluateAlert(alert: AlertRecord, currentPrice: number): boolean {
-  switch (alert.alert_type) {
+  switch (alert.alertType) {
     case 'above':
       return currentPrice >= alert.threshold;
     case 'below':

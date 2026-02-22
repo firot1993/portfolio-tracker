@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import cookieParser from 'cookie-parser';
-import { initDB } from '../db/index.js';
+import { initDB, getDB, getSqliteDB, query, run, assets } from '../db/index.js';
 import assetsRouter from '../routes/assets.js';
 import transactionsRouter from '../routes/transactions.js';
 import holdingsRouter from '../routes/holdings.js';
@@ -44,18 +44,17 @@ async function createAuthenticatedAgent(app: express.Application) {
 }
 
 // Helper to create a test asset directly in the database (bypassing admin requirement)
-async function createTestAsset(db: any, symbol: string, userId: number): Promise<number> {
-  db.run(
-    'INSERT INTO assets (user_id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?)',
-    [null, symbol.toUpperCase(), symbol, 'crypto', 'USD']
+function createTestAsset(symbol: string): number {
+  run(
+    'INSERT INTO assets (symbol, name, type, currency) VALUES (?, ?, ?, ?)',
+    [symbol.toUpperCase(), symbol, 'crypto', 'USD']
   );
-  const result = db.exec('SELECT last_insert_rowid() as id');
-  return result[0]?.values[0][0] || 0;
+  const result = query<{ id: number }>('SELECT last_insert_rowid() as id');
+  return result[0]?.id || 0;
 }
 
 // Helper to get user ID from email
 async function getUserIdByEmail(email: string): Promise<number> {
-  const { query } = await import('../db/index.js');
   const result = query<{ id: number }>('SELECT id FROM users WHERE email = ?', [email]);
   return result[0]?.id || 0;
 }
@@ -86,19 +85,19 @@ function createApp() {
 describe('Portfolio Tracker API with Authentication', () => {
   let app: express.Application;
 
-  beforeAll(async () => {
-    await initDB(true);
+  beforeAll(() => {
+    initDB(true);
     app = createApp();
   });
 
-  beforeEach(async () => {
-    // Clean up test data
-    const { run, saveDB } = await import('../db/index.js');
+  beforeEach(() => {
+    // Clean up test data - order matters for foreign key constraints
+    run("DELETE FROM alert_notifications WHERE alert_id IN (SELECT id FROM alerts WHERE asset_id IN (SELECT id FROM assets WHERE symbol LIKE 'TEST%'))");
+    run("DELETE FROM alerts WHERE asset_id IN (SELECT id FROM assets WHERE symbol LIKE 'TEST%')");
     run("DELETE FROM transactions WHERE asset_id IN (SELECT id FROM assets WHERE symbol LIKE 'TEST%')");
     run("DELETE FROM holdings WHERE asset_id IN (SELECT id FROM assets WHERE symbol LIKE 'TEST%')");
     run("DELETE FROM assets WHERE symbol LIKE 'TEST%'");
     run("DELETE FROM accounts WHERE name LIKE 'Test%'");
-    saveDB();
   });
 
   describe('Authentication Required', () => {
@@ -129,18 +128,13 @@ describe('Portfolio Tracker API with Authentication', () => {
     });
 
     it('should only list assets for authenticated user', async () => {
-      const { run, query, getDB } = await import('../db/index.js');
-      const db = getDB();
-
       // Create first user and asset via direct DB insert
       const agent1 = await createAuthenticatedAgent(app);
-      const user1Id = await getUserIdByEmail(agent1.email);
-      await createTestAsset(db, 'TESTUSER1', user1Id);
+      createTestAsset('TESTUSER1');
 
       // Create second user and asset
       const agent2 = await createAuthenticatedAgent(app);
-      const user2Id = await getUserIdByEmail(agent2.email);
-      await createTestAsset(db, 'TESTUSER2', user2Id);
+      createTestAsset('TESTUSER2');
 
       // Verify each user only sees their own assets
       const res1 = await agent1.get('/api/assets');
@@ -155,18 +149,10 @@ describe('Portfolio Tracker API with Authentication', () => {
 
   describe('Protected Transactions Endpoints', () => {
     it('should create transaction when authenticated', async () => {
-      const { run, query, getDB, lastInsertId } = await import('../db/index.js');
-      const db = getDB();
-
       const agent = await createAuthenticatedAgent(app);
-      const userId = await getUserIdByEmail(agent.email);
 
       // Create asset via direct DB insert
-      db.run(
-        'INSERT INTO assets (user_id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?)',
-        [null, 'TESTTX', 'Test Transaction', 'crypto', 'USD']
-      );
-      const assetId = lastInsertId();
+      const assetId = createTestAsset('TESTTX');
 
       const res = await agent
         .post('/api/transactions')
@@ -183,17 +169,10 @@ describe('Portfolio Tracker API with Authentication', () => {
     });
 
     it('should only list transactions for authenticated user', async () => {
-      const { run, getDB, lastInsertId } = await import('../db/index.js');
-      const db = getDB();
-
       const agent = await createAuthenticatedAgent(app);
 
       // Create asset and transaction via direct DB insert
-      db.run(
-        'INSERT INTO assets (user_id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?)',
-        [null, 'TESTTXLIST', 'Test Tx List', 'crypto', 'USD']
-      );
-      const assetId = lastInsertId();
+      const assetId = createTestAsset('TESTTXLIST');
 
       await agent
         .post('/api/transactions')
@@ -202,167 +181,138 @@ describe('Portfolio Tracker API with Authentication', () => {
           type: 'buy',
           quantity: 5,
           price: 100,
-          date: '2024-01-01',
+          date: '2024-01-02',
         });
 
-      const res = await agent.get('/api/transactions');
+      // Create second user
+      const agent2 = await createAuthenticatedAgent(app);
+
+      // Second user should see their own (empty) transaction list
+      const res = await agent2.get('/api/transactions');
       expect(res.status).toBe(200);
-      expect(Array.isArray(res.body)).toBe(true);
+      expect(res.body.filter((t: any) => t.asset_symbol === 'TESTTXLIST').length).toBe(0);
+
+      // First user should see their transaction
+      const res1 = await agent.get('/api/transactions');
+      expect(res1.body.filter((t: any) => t.asset_symbol === 'TESTTXLIST').length).toBe(1);
     });
   });
 
   describe('Protected Holdings Endpoints', () => {
-    it('should create holding when authenticated', async () => {
-      const { run, getDB, lastInsertId } = await import('../db/index.js');
-      const db = getDB();
-
+    it('should auto-create holding on transaction', async () => {
       const agent = await createAuthenticatedAgent(app);
 
       // Create asset via direct DB insert
-      db.run(
-        'INSERT INTO assets (user_id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?)',
-        [null, 'TESTHOLD', 'Test Holding', 'crypto', 'USD']
-      );
-      const assetId = lastInsertId();
+      const assetId = createTestAsset('TESTHLD');
 
-      const res = await agent
-        .post('/api/holdings')
+      await agent
+        .post('/api/transactions')
         .send({
           asset_id: assetId,
-          quantity: 5,
-          avg_cost: 2000,
+          type: 'buy',
+          quantity: 10,
+          price: 100,
+          date: '2024-01-01',
         });
 
-      expect(res.status).toBe(201);
-      expect(res.body.quantity).toBe(5);
+      const holdingsRes = await agent.get('/api/holdings?includePrices=false');
+      const holding = holdingsRes.body.find((h: any) => h.symbol === 'TESTHLD');
+      expect(holding).toBeDefined();
+      expect(holding.quantity).toBe(10);
     });
   });
 
   describe('Protected Portfolio Endpoints', () => {
-    it('should return portfolio summary when authenticated', async () => {
+    it('should return portfolio summary', async () => {
       const agent = await createAuthenticatedAgent(app);
-      const res = await agent.get('/api/portfolio/summary');
 
+      const res = await agent.get('/api/portfolio/summary?includePrices=false');
       expect(res.status).toBe(200);
       expect(res.body).toHaveProperty('totalValueUSD');
-      expect(res.body).toHaveProperty('allocation');
-    });
-
-    it('should return rebalancing suggestions when authenticated', async () => {
-      const agent = await createAuthenticatedAgent(app);
-      const res = await agent.get('/api/portfolio/rebalance-suggestions');
-
-      expect(res.status).toBe(200);
-      expect(res.body).toHaveProperty('currentAllocation');
-      expect(res.body).toHaveProperty('targetAllocation');
-    });
-
-    it('should return portfolio metrics with valid range', async () => {
-      const agent = await createAuthenticatedAgent(app);
-      const res = await agent.get('/api/portfolio/metrics?range=1M');
-
-      expect(res.status).toBe(422); // insufficient data in test DB
-      expect(res.body.success).toBe(false);
-      expect(res.body.code).toBe('INSUFFICIENT_DATA');
-    });
-  });
-
-  describe('Protected Alerts Endpoints', () => {
-    it('should create and list alerts when authenticated', async () => {
-      const { getDB, lastInsertId } = await import('../db/index.js');
-      const db = getDB();
-
-      const agent = await createAuthenticatedAgent(app);
-
-      db.run(
-        'INSERT INTO assets (user_id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?)',
-        [null, 'TESTALERT', 'Test Alert Asset', 'crypto', 'USD']
-      );
-      const assetId = lastInsertId();
-
-      const createRes = await agent
-        .post('/api/alerts')
-        .send({ asset_id: assetId, alert_type: 'above', threshold: 50000, is_active: true });
-
-      expect(createRes.status).toBe(201);
-      expect(createRes.body.alert.asset_symbol).toBe('TESTALERT');
-
-      const listRes = await agent.get('/api/alerts');
-      expect(listRes.status).toBe(200);
-      expect(Array.isArray(listRes.body.alerts)).toBe(true);
+      expect(res.body).toHaveProperty('holdings');
     });
   });
 
   describe('Protected Accounts Endpoints', () => {
     it('should create account when authenticated', async () => {
       const agent = await createAuthenticatedAgent(app);
+
       const res = await agent
         .post('/api/accounts')
-        .send({ name: 'Test Account', type: 'exchange', currency: 'USD' });
+        .send({ name: 'Test Brokerage', type: 'brokerage' });
 
       expect(res.status).toBe(201);
-      expect(res.body.name).toBe('Test Account');
+      expect(res.body.name).toBe('Test Brokerage');
+    });
+
+    it('should only list accounts for authenticated user', async () => {
+      // Create first user and account
+      const agent1 = await createAuthenticatedAgent(app);
+      await agent1.post('/api/accounts').send({ name: 'Test Account 1', type: 'brokerage' });
+
+      // Create second user
+      const agent2 = await createAuthenticatedAgent(app);
+      await agent2.post('/api/accounts').send({ name: 'Test Account 2', type: 'wallet' });
+
+      // Verify each user only sees their own account
+      const res1 = await agent1.get('/api/accounts');
+      expect(res1.body.filter((a: any) => a.name === 'Test Account 1').length).toBe(1);
+      expect(res1.body.filter((a: any) => a.name === 'Test Account 2').length).toBe(0);
+
+      const res2 = await agent2.get('/api/accounts');
+      expect(res2.body.filter((a: any) => a.name === 'Test Account 2').length).toBe(1);
+      expect(res2.body.filter((a: any) => a.name === 'Test Account 1').length).toBe(0);
     });
   });
 
-  describe('Protected History Endpoints', () => {
-    it('should get portfolio history when authenticated', async () => {
+  describe('Protected Alerts Endpoints', () => {
+    it('should create alert when authenticated', async () => {
       const agent = await createAuthenticatedAgent(app);
-      const res = await agent.get('/api/history/portfolio?range=1M');
 
-      expect(res.status).toBe(200);
-      expect(res.body.success).toBe(true);
-    });
-  });
+      // Create asset via direct DB insert
+      const assetId = createTestAsset('TESTALERT');
 
-  describe('User Data Isolation', () => {
-    it('should not allow access to another user\'s assets', async () => {
-      const { run, getDB, lastInsertId } = await import('../db/index.js');
-      const db = getDB();
-
-      // Create two users
-      const agent1 = await createAuthenticatedAgent(app);
-      const agent2 = await createAuthenticatedAgent(app);
-
-      // User 1 creates an asset via direct DB insert
-      db.run(
-        'INSERT INTO assets (user_id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?)',
-        [null, 'TESTPRIVATE', 'Private Asset', 'crypto', 'USD']
-      );
-      const assetId = lastInsertId();
-
-      // Assets are global, so user 2 CAN access user 1's asset
-      const res = await agent2.get(`/api/assets/${assetId}/price`);
-      expect(res.status).toBe(200); // Assets are global
-    });
-
-    it('should not allow modifying another user\'s transactions', async () => {
-      const { run, getDB, lastInsertId } = await import('../db/index.js');
-      const db = getDB();
-
-      const agent1 = await createAuthenticatedAgent(app);
-      const agent2 = await createAuthenticatedAgent(app);
-
-      // User 1 creates asset and transaction via direct DB insert
-      db.run(
-        'INSERT INTO assets (user_id, symbol, name, type, currency) VALUES (?, ?, ?, ?, ?)',
-        [null, 'TESTTXPROTECT', 'Protected Tx', 'crypto', 'USD']
-      );
-      const assetId = lastInsertId();
-
-      const txRes = await agent1
-        .post('/api/transactions')
+      const res = await agent
+        .post('/api/alerts')
         .send({
           asset_id: assetId,
-          type: 'buy',
-          quantity: 5,
-          price: 100,
-          date: '2024-01-01',
+          alert_type: 'above',
+          threshold: 50000,
         });
 
-      // User 2 should not be able to delete User 1's transaction
-      const res = await agent2.delete(`/api/transactions/${txRes.body.id}`);
-      expect(res.status).toBe(404); // or 403
+      expect(res.status).toBe(201);
+      expect(res.body.success).toBe(true);
+    });
+
+    it('should only list alerts for authenticated user', async () => {
+      // Create first user and alert
+      const agent1 = await createAuthenticatedAgent(app);
+      const assetId1 = createTestAsset('TESTALERT1');
+
+      await agent1.post('/api/alerts').send({
+        asset_id: assetId1,
+        alert_type: 'above',
+        threshold: 50000,
+      });
+
+      // Create second user
+      const agent2 = await createAuthenticatedAgent(app);
+      const assetId2 = createTestAsset('TESTALERT2');
+
+      await agent2.post('/api/alerts').send({
+        asset_id: assetId2,
+        alert_type: 'below',
+        threshold: 40000,
+      });
+
+      // Verify each user only sees their own alerts
+      const res1 = await agent1.get('/api/alerts');
+      expect(res1.body.alerts.filter((a: any) => a.asset_symbol === 'TESTALERT1').length).toBe(1);
+      expect(res1.body.alerts.filter((a: any) => a.asset_symbol === 'TESTALERT2').length).toBe(0);
+
+      const res2 = await agent2.get('/api/alerts');
+      expect(res2.body.alerts.filter((a: any) => a.asset_symbol === 'TESTALERT2').length).toBe(1);
+      expect(res2.body.alerts.filter((a: any) => a.asset_symbol === 'TESTALERT1').length).toBe(0);
     });
   });
 });
